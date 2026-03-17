@@ -2,6 +2,3 @@ streamlit
 pandas
 requests
 openpyxl
-xlsxwriter
-Office365-REST-Python-Client
-streamlit-aggrid
