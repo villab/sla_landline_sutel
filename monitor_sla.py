@@ -64,7 +64,7 @@ if not df_master.empty:
     for i, op in enumerate(operadores):
         with tabs[i]:
             df_op = df_master[df_master['operador'] == op].copy()
-            df_agrupado = df_op.groupby(['Provincia', 'Canton'])['StM'].apply(list).reset_index()
+            df_agrupado = df_op.groupby(['provincia', 'canton'])['StM'].apply(list).reset_index()
             
             for m in METRICAS:
                 df_agrupado[m] = 0
