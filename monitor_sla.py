@@ -4,7 +4,8 @@ import requests
 from datetime import datetime
 import calendar
 
-# --- 1. CONFIGURACIÓN DE API ---
+# --- 1. CONFIGURACIÓN DE API Y CREDENCIALES ---
+# Se recomienda usar st.secrets en Streamlit Cloud
 API_URL = st.secrets["api_url"]
 BEARER_TOKEN = st.secrets["bearer_token"]
 
@@ -13,26 +14,24 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
+# IPs de referencia para clasificar Pings
 IP_NACIONAL = "138.59.18.180"
 IP_INTERNACIONAL = "84.17.40.24"
 METRICAS = ["Ping Nacional", "Ping Internacional", "HTTP Download", "HTTP Upload"]
 
+# --- CONFIGURACIÓN DE PÁGINA ---
 st.set_page_config(page_title="SUTEL - Monitor de Clusters", layout="wide")
 
 @st.cache_data
 def load_data():
     file_path = 'Clusters_Sutel_Fijo2026.xlsx'
     try:
-        # Cargamos el Excel
         df = pd.read_excel(file_path, engine='openpyxl')
-        
-        # Limpieza: Todo a minúsculas para no fallar por mayúsculas
+        # Limpieza: Todo a minúsculas y sin espacios
         df.columns = [str(c).strip().lower() for c in df.columns]
-        
-        # Verificación de seguridad: Si no encuentra 'id' pero sí 'cluster', lo renombra
+        # Renombrar 'cluster' a 'id' si fuera necesario para consistencia
         if 'cluster' in df.columns:
             df = df.rename(columns={'cluster': 'id'})
-            
         return df
     except Exception as e:
         st.error(f"Error al cargar el archivo: {e}")
@@ -52,32 +51,44 @@ df_master = load_data()
 if not df_master.empty:
     st.title("📊 Masterfile de Cumplimiento")
     
-    # Selector de fecha
-    st.sidebar.header("Configuración")
+    # --- SIDEBAR: CONFIGURACIÓN ---
+    st.sidebar.header("Configuración de Consulta")
     year = st.sidebar.selectbox("Año", [2025, 2026], index=1)
     month = st.sidebar.selectbox("Mes", range(1, 13), format_func=lambda x: calendar.month_name[x].capitalize())
     ts_start, ts_end = get_timestamps(year, month)
+    
+    # Generar la llave que usa la API para los resultados (ej: "03/2026")
+    mes_key = f"{str(month).zfill(2)}/{year}"
 
-    # Revisamos que 'operador' exista
     if 'operador' in df_master.columns:
         operadores = sorted(df_master['operador'].unique())
         tabs = st.tabs([f"Hoja {op}" for op in operadores])
 
         for i, op in enumerate(operadores):
             with tabs[i]:
-                df_op = df_master[df_master['operador'] == op].copy()
+                # 1. Inicializar el DataFrame del operador en st.session_state si no existe
+                # Esto permite que los datos persistan al cambiar de pestaña
+                state_key = f"df_{op}_{mes_key}"
                 
-                # IMPORTANTE: Usamos 'id' que es la columna de tu archivo
-                # Agrupamos por provincia y canton
-                if 'provincia' in df_op.columns and 'canton' in df_op.columns and 'id' in df_op.columns:
-                    df_agrupado = df_op.groupby(['provincia', 'canton'])['id'].apply(list).reset_index()
-                    
+                if state_key not in st.session_state:
+                    df_op_base = df_master[df_master['operador'] == op].copy()
+                    # Agrupamos por provincia y cantón guardando la lista de IDs de clusters
+                    df_grouped = df_op_base.groupby(['provincia', 'canton'])['id'].apply(list).reset_index()
+                    # Inicializamos métricas en 0
                     for m in METRICAS:
-                        df_agrupado[m] = 0
-                    
-                    # --- BOTÓN DE ACCIÓN ---
-                    if st.button(f"Sincronizar Datos API - {op}", key=f"btn_{op}"):
-                        listado_clusters = df_op['id'].unique().tolist()
+                        df_grouped[m] = 0
+                    st.session_state[state_key] = df_grouped
+
+                # Recuperamos el dataframe del estado actual
+                df_actual = st.session_state[state_key]
+
+                # --- BOTÓN DE ACCIÓN ---
+                col_btn, col_txt = st.columns([1, 3])
+                with col_btn:
+                    if st.button(f"Sincronizar API - {op}", key=f"btn_{op}"):
+                        # Extraer todos los IDs de clusters para este operador
+                        df_op_raw = df_master[df_master['operador'] == op]
+                        listado_clusters = df_op_raw['id'].unique().tolist()
                         
                         payload = {
                             "tsStart": ts_start,
@@ -93,30 +104,73 @@ if not df_master.empty:
                         }
 
                         try:
-                            with st.spinner("Consultando API..."):
+                            with st.spinner(f"Consultando Medux para {op}..."):
                                 response = requests.post(API_URL, json=payload, headers=HEADERS)
                                 if response.status_code == 200:
-                                    st.success(f"Conexión exitosa para {op}")
-                                else:
-                                    st.error(f"Error API: {response.status_code}")
-                        except Exception as e:
-                            st.error(f"Error de conexión: {e}")
+                                    res_json = response.json()
+                                    # Navegamos en el JSON: results -> "MM/YYYY"
+                                    data_api = res_json.get("results", {}).get(mes_key, {})
+                                    
+                                    if not data_api:
+                                        st.warning(f"No se devolvieron resultados para {mes_key}")
+                                    else:
+                                        # Resetear a 0 antes de la nueva carga para evitar duplicados si se pulsa 2 veces
+                                        for m in METRICAS:
+                                            df_actual[m] = 0
 
-                    # --- VISUALIZACIÓN ---
-                    df_final = df_agrupado.copy()
-                    df_final['provincia'] = df_final['provincia'].str.title()
-                    df_final['canton'] = df_final['canton'].str.title()
-                    df_final = df_final.set_index(['provincia', 'canton'])
-                    
-                    st.dataframe(
-                        df_final[METRICAS].style.background_gradient(cmap='Blues', axis=None).format("{:d}"),
-                        use_container_width=True,
-                        height=600
-                    )
-                else:
-                    st.error("Faltan columnas críticas (provincia, canton o id).")
-                    st.write("Columnas detectadas:", df_op.columns.tolist())
+                                        # Procesar cada cluster en la respuesta
+                                        # Nota: Si el breakdownBy devuelve una lista, iteramos sobre ella.
+                                        # Si devuelve un diccionario por cluster (como tu ejemplo), iteramos items.
+                                        for cluster_id, info in data_api.items():
+                                            # Buscamos qué cantón contiene este cluster_id
+                                            mask = df_actual['id'].apply(lambda x: cluster_id in x)
+                                            
+                                            # Intentamos obtener el conteo
+                                            count = info.get("meduxId", {}).get("count", 0)
+                                            prog = info.get("program", "") # Depende de si la API lo anida o lo pone al nivel
+                                            tgt = info.get("target", "")
+
+                                            # Lógica de clasificación (ajustar según niveles del JSON real)
+                                            # Como tu ejemplo es simplificado, aquí un mapeo de ejemplo:
+                                            if "ping" in prog:
+                                                col = "Ping Nacional" if tgt == IP_NACIONAL else "Ping Internacional"
+                                            elif "down" in prog:
+                                                col = "HTTP Download"
+                                            elif "upload" in prog:
+                                                col = "HTTP Upload"
+                                            else:
+                                                # Si la API no separa por programa en este nivel, 
+                                                # sumamos a la primera columna por defecto para pruebas
+                                                col = "Ping Nacional"
+
+                                            df_actual.loc[mask, col] += count
+                                        
+                                        st.session_state[state_key] = df_actual
+                                        st.success(f"Datos sincronizados para {op}")
+                                        st.rerun() # Refrescar para ver cambios
+                                else:
+                                    st.error(f"Error API {response.status_code}: {response.text}")
+                        except Exception as e:
+                            st.error(f"Error de procesamiento: {e}")
+
+                with col_txt:
+                    st.info(f"Mostrando periodo: **{mes_key}**. Pulsa sincronizar para actualizar los datos desde la API.")
+
+                # --- VISUALIZACIÓN DE LA TABLA ---
+                df_viz = df_actual.copy()
+                # Formatear nombres para la tabla
+                df_viz['provincia'] = df_viz['provincia'].str.title()
+                df_viz['canton'] = df_viz['canton'].str.title()
+                df_viz = df_viz.set_index(['provincia', 'canton'])
+
+                # Mostrar solo las columnas de métricas (ocultamos la lista de 'id')
+                st.dataframe(
+                    df_viz[METRICAS].style.background_gradient(cmap='Blues', axis=None).format("{:d}"),
+                    use_container_width=True,
+                    height=600
+                )
+                
     else:
-        st.error("No se encontró la columna 'operador'.")
+        st.error("No se encontró la columna 'operador' en el archivo.")
 else:
-    st.error("El archivo está vacío o no se pudo cargar.")
+    st.error("Asegúrate de que el archivo 'Clusters_Sutel_Fijo2026.xlsx' esté en la carpeta raíz.")
