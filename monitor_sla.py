@@ -26,12 +26,13 @@ def load_data():
         # Cargamos el Excel
         df = pd.read_excel(file_path, engine='openpyxl')
         
-        # Limpieza de nombres de columnas: quitamos espacios y convertimos a minúsculas
-        # para que el código no falle si el Excel cambia ligeramente
+        # Limpieza: Todo a minúsculas para no fallar por mayúsculas
         df.columns = [str(c).strip().lower() for c in df.columns]
         
-        # Mapeo interno para asegurar consistencia en el resto del script
-        # Buscamos 'cluster', 'provincia', 'canton', 'operador'
+        # Verificación de seguridad: Si no encuentra 'id' pero sí 'cluster', lo renombra
+        if 'cluster' in df.columns:
+            df = df.rename(columns={'cluster': 'id'})
+            
         return df
     except Exception as e:
         st.error(f"Error al cargar el archivo: {e}")
@@ -51,72 +52,71 @@ df_master = load_data()
 if not df_master.empty:
     st.title("📊 Masterfile de Cumplimiento")
     
-    # Sidebar
+    # Selector de fecha
     st.sidebar.header("Configuración")
     year = st.sidebar.selectbox("Año", [2025, 2026], index=1)
     month = st.sidebar.selectbox("Mes", range(1, 13), format_func=lambda x: calendar.month_name[x].capitalize())
     ts_start, ts_end = get_timestamps(year, month)
 
-    # Identificar operadores (columna 'operador' en minúsculas según tu Excel)
-    operadores = sorted(df_master['operador'].unique())
-    tabs = st.tabs([f"Hoja {op}" for op in operadores])
+    # Revisamos que 'operador' exista
+    if 'operador' in df_master.columns:
+        operadores = sorted(df_master['operador'].unique())
+        tabs = st.tabs([f"Hoja {op}" for op in operadores])
 
-    for i, op in enumerate(operadores):
-        with tabs[i]:
-            # Filtrar por operador
-            df_op = df_master[df_master['operador'] == op].copy()
-            
-            # AGRUPACIÓN: Usamos 'provincia', 'canton' y 'cluster' tal cual vienen en tu archivo
-            # Agrupamos los clusters por cantón en una lista (por si hay varios por cantón)
-            df_agrupado = df_op.groupby(['provincia', 'canton'])['cluster'].apply(list).reset_index()
-            
-            # Inicializar columnas de métricas
-            for m in METRICAS:
-                df_agrupado[m] = 0
-            
-            # --- BOTÓN DE ACCIÓN ---
-            if st.button(f"Sincronizar Datos API - {op}", key=f"btn_{op}"):
-                # Usamos la columna 'cluster' para obtener los IDs para la API
-                listado_clusters = df_op['cluster'].unique().tolist()
+        for i, op in enumerate(operadores):
+            with tabs[i]:
+                df_op = df_master[df_master['operador'] == op].copy()
                 
-                payload = {
-                    "tsStart": ts_start,
-                    "tsEnd": ts_end,
-                    "format": "aggregate",
-                    "programs": ["http-upload-burst-test", "http-down-burst-test", "ping-test"],
-                    "clusters": listado_clusters,
-                    "aggregate": {
-                        "groupBy": {"field": "dateStart", "operation": "month"},
-                        "values": [{"field": "meduxId", "operation": "count"}],
-                        "breakdownBy": ["cluster", "program", "target"]
-                    }
-                }
+                # IMPORTANTE: Usamos 'id' que es la columna de tu archivo
+                # Agrupamos por provincia y canton
+                if 'provincia' in df_op.columns and 'canton' in df_op.columns and 'id' in df_op.columns:
+                    df_agrupado = df_op.groupby(['provincia', 'canton'])['id'].apply(list).reset_index()
+                    
+                    for m in METRICAS:
+                        df_agrupado[m] = 0
+                    
+                    # --- BOTÓN DE ACCIÓN ---
+                    if st.button(f"Sincronizar Datos API - {op}", key=f"btn_{op}"):
+                        listado_clusters = df_op['id'].unique().tolist()
+                        
+                        payload = {
+                            "tsStart": ts_start,
+                            "tsEnd": ts_end,
+                            "format": "aggregate",
+                            "programs": ["http-upload-burst-test", "http-down-burst-test", "ping-test"],
+                            "clusters": listado_clusters,
+                            "aggregate": {
+                                "groupBy": {"field": "dateStart", "operation": "month"},
+                                "values": [{"field": "meduxId", "operation": "count"}],
+                                "breakdownBy": ["cluster", "program", "target"]
+                            }
+                        }
 
-                try:
-                    with st.spinner("Consultando API..."):
-                        response = requests.post(API_URL, json=payload, headers=HEADERS)
-                        if response.status_code == 200:
-                            st.success(f"Conexión exitosa para {op}")
-                            # Aquí procesarías los datos reales
-                        else:
-                            st.error(f"Error API: {response.status_code}")
-                except Exception as e:
-                    st.error(f"Error de conexión: {e}")
+                        try:
+                            with st.spinner("Consultando API..."):
+                                response = requests.post(API_URL, json=payload, headers=HEADERS)
+                                if response.status_code == 200:
+                                    st.success(f"Conexión exitosa para {op}")
+                                else:
+                                    st.error(f"Error API: {response.status_code}")
+                        except Exception as e:
+                            st.error(f"Error de conexión: {e}")
 
-            # --- VISUALIZACIÓN ---
-            # Mostramos Provincia y Cantón con la primera letra en mayúscula para que se vea bien
-            df_final = df_agrupado.copy()
-            df_final['provincia'] = df_final['provincia'].str.capitalize()
-            df_final['canton'] = df_final['canton'].str.capitalize()
-            
-            # Ponemos el índice y ocultamos la columna 'cluster'
-            df_final = df_final.set_index(['provincia', 'canton'])
-            
-            st.dataframe(
-                df_final[METRICAS].style.background_gradient(cmap='Blues', axis=None).format("{:d}"),
-                use_container_width=True,
-                height=600
-            )
-
+                    # --- VISUALIZACIÓN ---
+                    df_final = df_agrupado.copy()
+                    df_final['provincia'] = df_final['provincia'].str.title()
+                    df_final['canton'] = df_final['canton'].str.title()
+                    df_final = df_final.set_index(['provincia', 'canton'])
+                    
+                    st.dataframe(
+                        df_final[METRICAS].style.background_gradient(cmap='Blues', axis=None).format("{:d}"),
+                        use_container_width=True,
+                        height=600
+                    )
+                else:
+                    st.error("Faltan columnas críticas (provincia, canton o id).")
+                    st.write("Columnas detectadas:", df_op.columns.tolist())
+    else:
+        st.error("No se encontró la columna 'operador'.")
 else:
-    st.error("No se pudo cargar la información del archivo Excel.")
+    st.error("El archivo está vacío o no se pudo cargar.")
