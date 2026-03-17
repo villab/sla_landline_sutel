@@ -25,23 +25,19 @@ st.set_page_config(page_title="SUTEL - Monitor de Clusters", layout="wide")
 
 @st.cache_data
 def load_data():
-    # Nombre exacto que veo en tu imagen
-    nombre_archivo = 'Clusters_Sutel_Fijo2026.xlsx'
+    file_path = 'Clusters_Sutel_Fijo2026.xlsx'
     try:
-        # Usamos read_excel porque es un archivo .xlsx
-        # Si la hoja no se llama 'clusters', quita el parámetro sheet_name o pon el correcto
-        df = pd.read_excel(nombre_archivo) 
+        # Forzamos el uso de openpyxl para archivos .xlsx
+        df = pd.read_excel(file_path, engine='openpyxl')
         
-        # Limpiar espacios en los nombres de las columnas
-        df.columns = [c.strip() for c in df.columns]
+        # Limpieza de nombres de columnas
+        df.columns = [str(c).strip() for c in df.columns]
         return df
-    except FileNotFoundError:
-        st.error(f"❌ No se encontró el archivo: {nombre_archivo}")
-        return pd.DataFrame()
     except Exception as e:
-        st.error(f"❌ Error al abrir el Excel: {e}")
+        st.error(f"Error al cargar el archivo: {e}")
         return pd.DataFrame()
 
+df_master = load_data()
 def get_timestamps(year, month):
     start_dt = datetime(year, month, 1, 0, 0, 0)
     ts_start = int(start_dt.timestamp() * 1000)
