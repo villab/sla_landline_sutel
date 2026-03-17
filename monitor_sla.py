@@ -4,20 +4,34 @@ import requests
 from datetime import datetime
 import calendar
 
-# --- CONFIGURACIÓN ---
-st.set_page_config(page_title="SUTEL - Monitor de Clusters", layout="wide")
+# --- 1. CONFIGURACIÓN DE API Y CREDENCIALES ---
+# Puedes ponerlas aquí directamente o usar st.secrets para mayor seguridad
 
-# Mapeo de IPs para lógica de Pings
+API_URL = st.secrets["api_url"]
+BEARER_TOKEN = st.secrets["bearer_token"]
+
+HEADERS = {
+    "Authorization": f"Bearer {BEARER_TOKEN}",
+    "Content-Type": "application/json"
+}
+
+# IPs de referencia
 IP_NACIONAL = "138.59.18.180"
 IP_INTERNACIONAL = "84.17.40.24"
 METRICAS = ["Ping Nacional", "Ping Internacional", "HTTP Download", "HTTP Upload"]
 
+# --- CONFIGURACIÓN DE PÁGINA ---
+st.set_page_config(page_title="SUTEL - Monitor de Clusters", layout="wide")
+
 @st.cache_data
 def load_data():
-    # Cargamos el archivo final que confirmaste
-    df = pd.read_csv('Clusters_Sutel_Fijo2026.xlsx - clusters.csv')
-    df.columns = [c.strip() for c in df.columns]
-    return df
+    try:
+        
+        df = pd.read_excel('Clusters_Sutel_Fijo2026.xlsx', sheet_name='clusters')
+        df.columns = [c.strip() for c in df.columns]
+        return df
+    except:
+        return pd.DataFrame()
 
 def get_timestamps(year, month):
     start_dt = datetime(year, month, 1, 0, 0, 0)
@@ -33,52 +47,61 @@ df_master = load_data()
 if not df_master.empty:
     st.title("📊 Masterfile de Cumplimiento")
     
-    # Selector de tiempo en el sidebar
-    st.sidebar.header("Configuración de Consulta")
+    # Sidebar
+    st.sidebar.header("Configuración")
     year = st.sidebar.selectbox("Año", [2025, 2026], index=1)
     month = st.sidebar.selectbox("Mes", range(1, 13), format_func=lambda x: calendar.month_name[x].capitalize())
-    
     ts_start, ts_end = get_timestamps(year, month)
 
-    # Definir los 4 operadores
     operadores = sorted(df_master['operador'].unique())
     tabs = st.tabs([f"Hoja {op}" for op in operadores])
 
     for i, op in enumerate(operadores):
         with tabs[i]:
-            # 1. Filtrar datos del operador actual
             df_op = df_master[df_master['operador'] == op].copy()
-            
-            # 2. Agrupar por Provincia y Cantón, recolectando los StM (IDs de clusters)
-            # Esto es vital porque un cantón tiene varios clusters
             df_agrupado = df_op.groupby(['Provincia', 'Canton'])['StM'].apply(list).reset_index()
             
-            # 3. Añadir columnas de métricas en 0
             for m in METRICAS:
                 df_agrupado[m] = 0
             
-            # 4. Interfaz de Botón para API
-            col_info, col_btn = st.columns([3, 1])
-            with col_info:
-                st.subheader(f"Operador: {op}")
-            with col_btn:
-                if st.button(f"Sincronizar API {op}", key=f"btn_{op}"):
-                    # Aquí prepararías el payload masivo con todos los clusters del operador
-                    todos_los_clusters = df_op['StM'].unique().tolist()
-                    st.toast(f"Consultando {len(todos_los_clusters)} clusters...")
-                    # Lógica de requests.post iría aquí
-            
-            # 5. Formateo de la tabla para visualización
+            # --- BOTÓN DE ACCIÓN ---
+            if st.button(f"Sincronizar Datos API - {op}", key=f"btn_{op}"):
+                clusters_op = df_op['StM'].unique().tolist()
+                
+                # PAYLOAD según tu ejemplo de Postman
+                payload = {
+                    "tsStart": ts_start,
+                    "tsEnd": ts_end,
+                    "format": "aggregate",
+                    "programs": ["http-upload-burst-test", "http-down-burst-test", "ping-test"],
+                    "clusters": clusters_op,
+                    "aggregate": {
+                        "groupBy": {"field": "dateStart", "operation": "month"},
+                        "values": [{"field": "meduxId", "operation": "count"}],
+                        "breakdownBy": ["cluster", "program", "target"]
+                    }
+                }
+
+                try:
+                    with st.spinner("Consultando API..."):
+                        response = requests.post(API_URL, json=payload, headers=HEADERS)
+                        
+                        if response.status_code == 200:
+                            data_api = response.json()
+                            st.success(f"Conexión exitosa. Datos de {op} actualizados.")
+                            # Aquí procesarías data_api para actualizar df_agrupado
+                        else:
+                            st.error(f"Error API: {response.status_code} - {response.text}")
+                except Exception as e:
+                    st.error(f"No se pudo conectar con el servidor: {e}")
+
+            # --- TABLA ---
             df_final = df_agrupado.set_index(['Provincia', 'Canton'])
-            
-            # Mostramos el DataFrame (excluimos la columna oculta de listas 'StM' para el usuario)
             st.dataframe(
                 df_final[METRICAS].style.background_gradient(cmap='Blues', axis=None).format("{:d}"),
                 use_container_width=True,
-                height=650
+                height=600
             )
-            
-            st.caption(f"ID de clusters vinculados en esta hoja: {len(df_op['StM'].unique())}")
 
 else:
-    st.error("No se pudo leer el archivo de clusters.")
+    st.error("Archivo no encontrado.")
