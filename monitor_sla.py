@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # ------ Configuración de vista ----------
 st.set_page_config(
     page_title="SLA Sutel Fijo", # Nombre
-    page_icon="",                # 
+    page_icon="🚩",                # 
     layout="wide"
 )
 
