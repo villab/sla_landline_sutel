@@ -1,14 +1,26 @@
 import streamlit as st
 import pandas as pd
 import requests
+import os  # <-- ¡MUY IMPORTANTE!
 from datetime import datetime
 import calendar
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- CONFIGURACIÓN ---
+# Buscamos en secrets (Cloud) o en Environment (Docker)
 API_URL = st.secrets.get("api_url") or os.getenv("api_url")
 BEARER_TOKEN = st.secrets.get("bearer_token") or os.getenv("bearer_token")
-HEADERS = {"Authorization": f"Bearer {BEARER_TOKEN}", "Content-Type": "application/json"}
+
+# Verificar que cargaron
+if not API_URL or not BEARER_TOKEN:
+    st.error("No se encontraron API_URL o BEARER_TOKEN. Revisa el archivo .env")
+    st.stop()
+
+# Configurar Headers para la API
+HEADERS = {
+    "Authorization": f"Bearer {BEARER_TOKEN}",
+    "Content-Type": "application/json"
+}
 IP_NACIONAL = "138.59.18.180"
 IP_INTERNACIONAL = "84.17.40.24"
 METRICAS = ["Ping Nacional", "Ping Internacional", "HTTP Download", "HTTP Upload"]
