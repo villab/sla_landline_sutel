@@ -150,7 +150,7 @@ if not df_master.empty:
         st.rerun()
 
 # --- RENDERIZADO TABS ---
-    tabs = st.tabs([f"Hoja {op}" for op in operadores])
+    tabs = st.tabs([f"{op}" for op in operadores])
     for i, op in enumerate(operadores):
         with tabs[i]:
             state_key = f"df_{op}_{mes_key}"
