@@ -15,6 +15,23 @@ METRICAS = ["Ping Nacional", "Ping Internacional", "HTTP Download", "HTTP Upload
 
 st.set_page_config(page_title="SUTEL - Monitor High-Speed", layout="wide")
 
+# --- FUNCIÓN DE COLOR PERSONALIZADA (Requerimiento 3) ---
+def aplicar_color_semaforo(val):
+    """Aplica colores pastel según el rango del valor"""
+    try:
+        val = int(val)
+        if val == 0:
+            return 'background-color: #ffcccc'  # Rojo pastel
+        elif 1 <= val <= 500:
+            return 'background-color: #ffe5cc'  # Naranja pastel
+        elif 501 <= val <= 999:
+            return 'background-color: #ffffcc'  # Amarillo pastel
+        elif val >= 1000:
+            return 'background-color: #ccffcc'  # Verde pastel
+        return ''
+    except:
+        return ''
+
 @st.cache_data
 def load_data():
     try:
@@ -25,7 +42,6 @@ def load_data():
     except Exception as e:
         st.error(f"Error: {e}"); return pd.DataFrame()
 
-# Función individual para que cada "hilo" ejecute una consulta
 def fetch_cluster_data(cid, ts_start, ts_end, mes_key):
     payload = {
         "tsStart": ts_start, "tsEnd": ts_end, "format": "aggregate",
@@ -53,7 +69,6 @@ if not df_master.empty:
     year = st.sidebar.selectbox("Año", [2025, 2026], index=1)
     month = st.sidebar.selectbox("Mes", range(1, 13), format_func=lambda x: calendar.month_name[x].capitalize())
     
-    # Timestamps
     ts_start = int(datetime(year, month, 1).timestamp() * 1000)
     ts_end = int(datetime(year, month, calendar.monthrange(year, month)[1], 23, 59, 59).timestamp() * 1000)
     mes_key = f"{str(month).zfill(2)}/{year}"
@@ -63,7 +78,6 @@ if not df_master.empty:
         status = st.empty()
         progress_bar = st.progress(0)
         
-        # Inicializar estados
         for op in operadores:
             state_key = f"df_{op}_{mes_key}"
             df_op_base = df_master[df_master['operador'] == op].copy()
@@ -75,20 +89,15 @@ if not df_master.empty:
         todos_ids = df_master['id'].unique().tolist()
         total_clusters = len(todos_ids)
         
-        # --- EJECUCIÓN EN PARALELO ---
-        # max_workers=10 significa que hará 10 peticiones simultáneas
         results_list = []
         with ThreadPoolExecutor(max_workers=10) as executor:
-            # Lanzamos todas las tareas
             future_to_cluster = {executor.submit(fetch_cluster_data, cid, ts_start, ts_end, mes_key): cid for cid in todos_ids}
-            
             for i, future in enumerate(as_completed(future_to_cluster)):
                 cid, data, code = future.result()
                 results_list.append((cid, data, code))
                 progress_bar.progress((i + 1) / total_clusters)
                 status.text(f"Recibiendo datos: {i+1}/{total_clusters}")
 
-        # --- PROCESAMIENTO DE RESULTADOS ---
         for cid, res_json, code in results_list:
             op_pertenece = df_master[df_master['id'] == cid]['operador'].values[0]
             df_temp = st.session_state[f"df_{op_pertenece}_{mes_key}"]
@@ -122,6 +131,28 @@ if not df_master.empty:
             state_key = f"df_{op}_{mes_key}"
             if state_key in st.session_state:
                 df_viz = st.session_state[state_key].copy()
+                
+                # Formateo de nombres
                 df_viz['provincia'] = df_viz['provincia'].str.title()
                 df_viz['canton'] = df_viz['canton'].str.title()
-                st.dataframe(df_viz.set_index(['provincia', 'canton'])[METRICAS + ["Estado"]].style.background_gradient(cmap='Blues', subset=METRICAS))
+                
+                # 1. Numeración de filas (costado izquierdo)
+                df_viz = df_viz.reset_index(drop=True)
+                df_viz.index = df_viz.index + 1
+                df_viz.index.name = "#"
+
+                # Selección de columnas para mostrar
+                columnas_ver = ["Estado"] + METRICAS
+                
+                # 2 y 3. Estilo de colores y Ampliación de tabla (height=1000)
+                st.dataframe(
+                    df_viz[columnas_ver].style.applymap(
+                        aplicar_color_semaforo, 
+                        subset=METRICAS
+                    ).applymap(
+                        lambda x: 'color: red; font-weight: bold' if x == '🚫 403' else ('color: green' if x == '✅ OK' else ''),
+                        subset=['Estado']
+                    ).format("{:d}", subset=METRICAS),
+                    use_container_width=True,
+                    height=1000 # Más filas visibles hacia abajo
+                )
