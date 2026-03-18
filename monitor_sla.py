@@ -6,8 +6,8 @@ import calendar
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # --- CONFIGURACIÓN ---
-API_URL = st.secrets["api_url"]
-BEARER_TOKEN = st.secrets["bearer_token"]
+API_URL = st.secrets.get("api_url") or os.getenv("api_url")
+BEARER_TOKEN = st.secrets.get("bearer_token") or os.getenv("bearer_token")
 HEADERS = {"Authorization": f"Bearer {BEARER_TOKEN}", "Content-Type": "application/json"}
 IP_NACIONAL = "138.59.18.180"
 IP_INTERNACIONAL = "84.17.40.24"
