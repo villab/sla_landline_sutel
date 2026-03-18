@@ -5,7 +5,6 @@ from datetime import datetime
 import calendar
 
 # --- 1. CONFIGURACIÓN DE API ---
-# El API_URL debe ser el endpoint fijo (ej: https://api.medux.com/v1/aggregate)
 API_URL = st.secrets["api_url"]
 BEARER_TOKEN = st.secrets["bearer_token"]
 
@@ -14,6 +13,7 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
+# IPs para clasificación
 IP_NACIONAL = "138.59.18.180"
 IP_INTERNACIONAL = "84.17.40.24"
 METRICAS = ["Ping Nacional", "Ping Internacional", "HTTP Download", "HTTP Upload"]
@@ -34,7 +34,6 @@ def load_data():
         return pd.DataFrame()
 
 def get_timestamps(year, month):
-    # Aseguramos inicio y fin de mes exactos
     start_dt = datetime(year, month, 1, 0, 0, 0)
     ts_start = int(start_dt.timestamp() * 1000)
     last_day = calendar.monthrange(year, month)[1]
@@ -81,7 +80,7 @@ if not df_master.empty:
                         status_text = st.empty()
                         clusters_403 = []
 
-                        # Resetear datos
+                        # Resetear datos actuales
                         for m in METRICAS: df_actual[m] = 0
 
                         for idx, cid in enumerate(listado_clusters):
@@ -97,7 +96,7 @@ if not df_master.empty:
                                 "aggregate": {
                                     "groupBy": {"field": "dateStart", "operation": "month"},
                                     "values": [{"field": "meduxId", "operation": "count"}],
-                                    "breakdownBy": ["program", "target"] # Agregamos desglose para las 4 columnas
+                                    "breakdownBy": ["cluster", "test", "target"]
                                 }
                             }
 
@@ -107,28 +106,35 @@ if not df_master.empty:
 
                                 if response.status_code == 200:
                                     res_json = response.json()
-                                    # Navegamos por la estructura de resultados
-                                    # results -> mes -> cluster -> programa -> target
-                                    data_cluster = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
+                                    data_mes = res_json.get("results", {}).get(mes_key, {})
                                     
-                                    if data_cluster:
-                                        # Recorremos programas dentro del cluster
-                                        for prog, targets in data_cluster.items():
-                                            if isinstance(targets, dict):
-                                                for tgt, values in targets.items():
-                                                    count = values.get("meduxId", {}).get("count", 0)
-                                                    
-                                                    # Clasificación
-                                                    col = None
-                                                    if prog == "ping-test":
-                                                        col = "Ping Nacional" if tgt == IP_NACIONAL else "Ping Internacional"
-                                                    elif prog == "http-down-burst-test":
-                                                        col = "HTTP Download"
-                                                    elif prog == "http-upload-burst-test":
-                                                        col = "HTTP Upload"
-                                                    
-                                                    if col:
-                                                        df_actual.loc[mask, col] += count
+                                    if cid in data_mes:
+                                        cluster_content = data_mes[cid]
+                                        
+                                        # Recorremos el 1er nivel de breakdown: 'test'
+                                        for test_name, targets in cluster_content.items():
+                                            if not isinstance(targets, dict): continue
+                                            
+                                            # Recorremos el 2do nivel: 'target'
+                                            for target_addr, details in targets.items():
+                                                if not isinstance(details, dict): continue
+                                                
+                                                count = details.get("meduxId", {}).get("count", 0)
+                                                
+                                                # Mapeo a las columnas según test y target
+                                                col = None
+                                                if test_name == "ping-test":
+                                                    if IP_NACIONAL in target_addr:
+                                                        col = "Ping Nacional"
+                                                    elif IP_INTERNACIONAL in target_addr:
+                                                        col = "Ping Internacional"
+                                                elif test_name == "http-down-burst-test":
+                                                    col = "HTTP Download"
+                                                elif test_name == "http-upload-burst-test":
+                                                    col = "HTTP Upload"
+                                                
+                                                if col:
+                                                    df_actual.loc[mask, col] += count
                                         
                                         df_actual.loc[mask, "Estado"] = "✅ OK"
                                     else:
@@ -139,7 +145,7 @@ if not df_master.empty:
                                     clusters_403.append(cid)
                                     df_actual.loc[mask, "Estado"] = "🚫 403"
 
-                            except Exception as e:
+                            except Exception:
                                 continue
 
                         progress_bar.empty()
@@ -153,7 +159,7 @@ if not df_master.empty:
                         st.rerun()
 
                 with col_info:
-                    st.info(f"Sincronizando {op} para {mes_key}. El endpoint es fijo: {API_URL}")
+                    st.info(f"Sincronizando {op} para {mes_key}. Desglose por Cluster, Test y Target.")
 
                 # --- VISUALIZACIÓN ---
                 df_viz = df_actual.copy()
