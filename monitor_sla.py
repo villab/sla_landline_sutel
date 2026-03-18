@@ -6,14 +6,27 @@ from datetime import datetime
 import calendar
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --- CONFIGURACIÓN ---
-# Buscamos en secrets (Cloud) o en Environment (Docker)
-API_URL = st.secrets.get("api_url") or os.getenv("api_url")
-BEARER_TOKEN = st.secrets.get("bearer_token") or os.getenv("bearer_token")
 
-# Verificar que cargaron
+# --- CONFIGURACIÓN DE API (Blindada para Docker) ---
+try:
+    # Intentamos primero con secretos de Streamlit
+    API_URL = st.secrets.get("api_url")
+    BEARER_TOKEN = st.secrets.get("bearer_token")
+except Exception:
+    # Si falla (como en Docker), forzamos la lectura desde el entorno
+    API_URL = None
+    BEARER_TOKEN = None
+
+# Si no se obtuvieron de st.secrets, buscamos en las variables de sistema
+if not API_URL:
+    API_URL = os.getenv("api_url")
+if not BEARER_TOKEN:
+    BEARER_TOKEN = os.getenv("bearer_token")
+
+# Verificación final
 if not API_URL or not BEARER_TOKEN:
-    st.error("No se encontraron API_URL o BEARER_TOKEN. Revisa el archivo .env")
+    st.error("❌ Error Crítico: No se encontraron las credenciales (api_url / bearer_token).")
+    st.info("Revisa que el archivo .env no tenga espacios ni comillas.")
     st.stop()
 
 # Configurar Headers para la API
