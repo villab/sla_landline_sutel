@@ -13,12 +13,11 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-# IPs para clasificación
 IP_NACIONAL = "138.59.18.180"
 IP_INTERNACIONAL = "84.17.40.24"
 METRICAS = ["Ping Nacional", "Ping Internacional", "HTTP Download", "HTTP Upload"]
 
-st.set_page_config(page_title="SUTEL - Monitor de Clusters", layout="wide")
+st.set_page_config(page_title="SUTEL - Monitor Global", layout="wide")
 
 @st.cache_data
 def load_data():
@@ -45,133 +44,120 @@ def get_timestamps(year, month):
 df_master = load_data()
 
 if not df_master.empty:
-    st.title("📊 Masterfile de Cumplimiento")
+    st.title("📊 Masterfile de Cumplimiento (Sincronización Total)")
     
+    # --- SIDEBAR ---
     st.sidebar.header("Configuración")
     year = st.sidebar.selectbox("Año", [2025, 2026], index=1)
     month = st.sidebar.selectbox("Mes", range(1, 13), format_func=lambda x: calendar.month_name[x].capitalize())
     ts_start, ts_end = get_timestamps(year, month)
     mes_key = f"{str(month).zfill(2)}/{year}"
 
-    if 'operador' in df_master.columns:
-        operadores = sorted(df_master['operador'].unique())
-        tabs = st.tabs([f"Hoja {op}" for op in operadores])
+    operadores = sorted(df_master['operador'].unique())
 
-        for i, op in enumerate(operadores):
-            with tabs[i]:
-                state_key = f"df_{op}_{mes_key}"
-                
-                if state_key not in st.session_state:
-                    df_op_base = df_master[df_master['operador'] == op].copy()
-                    df_grouped = df_op_base.groupby(['provincia', 'canton'])['id'].apply(list).reset_index()
-                    for m in METRICAS:
-                        df_grouped[m] = 0
-                    df_grouped["Estado"] = "Pendiente"
-                    st.session_state[state_key] = df_grouped
+    # --- BOTÓN GLOBAL (Fuera de las pestañas) ---
+    if st.button("🚀 Sincronizar TODOS los Operadores", use_container_width=True):
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        # Obtenemos todos los clusters únicos del archivo para el proceso
+        todos_clusters = df_master['id'].unique().tolist()
+        total = len(todos_clusters)
 
-                df_actual = st.session_state[state_key]
+        # 1. Preparar/Limpiar session_states para todos los operadores
+        for op in operadores:
+            state_key = f"df_{op}_{mes_key}"
+            df_op_base = df_master[df_master['operador'] == op].copy()
+            df_grouped = df_op_base.groupby(['provincia', 'canton'])['id'].apply(list).reset_index()
+            for m in METRICAS: df_grouped[m] = 0
+            df_grouped["Estado"] = "Sincronizando..."
+            st.session_state[state_key] = df_grouped
 
-                col_btn, col_info = st.columns([1, 3])
-                with col_btn:
-                    if st.button(f"Sincronizar API - {op}", key=f"btn_{op}"):
-                        listado_clusters = df_master[df_master['operador'] == op]['id'].unique().tolist()
+        # 2. Bucle de consulta cluster por cluster (Modo Seguro)
+        for idx, cid in enumerate(todos_clusters):
+            status_text.text(f"Procesando cluster {idx+1} de {total}: {cid}")
+            progress_bar.progress((idx + 1) / total)
+
+            payload = {
+                "tsStart": ts_start, "tsEnd": ts_end,
+                "format": "aggregate",
+                "programs": ["http-upload-burst-test", "http-down-burst-test", "ping-test"],
+                "clusters": [cid],
+                "aggregate": {
+                    "groupBy": {"field": "dateStart", "operation": "month"},
+                    "values": [{"field": "meduxId", "operation": "count"}],
+                    "breakdownBy": ["cluster", "test", "target"]
+                }
+            }
+
+            try:
+                response = requests.post(API_URL, json=payload, headers=HEADERS)
+                if response.status_code == 200:
+                    res_json = response.json()
+                    data_mes = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
+                    
+                    if data_mes:
+                        # Identificar a qué operador pertenece este cluster para actualizar su session_state
+                        op_pertenece = df_master[df_master['id'] == cid]['operador'].values[0]
+                        sk = f"df_{op_pertenece}_{mes_key}"
+                        df_temp = st.session_state[sk]
                         
-                        progress_bar = st.progress(0)
-                        status_text = st.empty()
-                        clusters_403 = []
-
-                        # Resetear datos actuales
-                        for m in METRICAS: df_actual[m] = 0
-
-                        for idx, cid in enumerate(listado_clusters):
-                            status_text.text(f"Consultando {cid}...")
-                            progress_bar.progress((idx + 1) / len(listado_clusters))
-
-                            payload = {
-                                "tsStart": ts_start,
-                                "tsEnd": ts_end,
-                                "format": "aggregate",
-                                "programs": ["http-upload-burst-test", "http-down-burst-test", "ping-test"],
-                                "clusters": [cid],
-                                "aggregate": {
-                                    "groupBy": {"field": "dateStart", "operation": "month"},
-                                    "values": [{"field": "meduxId", "operation": "count"}],
-                                    "breakdownBy": ["cluster", "test", "target"]
-                                }
-                            }
-
-                            try:
-                                response = requests.post(API_URL, json=payload, headers=HEADERS)
-                                mask = df_actual['id'].apply(lambda x: cid in x)
-
-                                if response.status_code == 200:
-                                    res_json = response.json()
-                                    data_mes = res_json.get("results", {}).get(mes_key, {})
+                        mask = df_temp['id'].apply(lambda x: cid in x)
+                        
+                        # Procesar niveles: Test -> Target
+                        for test_name, targets in data_mes.items():
+                            if isinstance(targets, dict):
+                                for target_addr, details in targets.items():
+                                    count = details.get("meduxId", {}).get("count", 0)
+                                    col = None
+                                    if test_name == "ping-test":
+                                        col = "Ping Nacional" if IP_NACIONAL in target_addr else "Ping Internacional"
+                                    elif "down" in test_name: col = "HTTP Download"
+                                    elif "upload" in test_name: col = "HTTP Upload"
                                     
-                                    if cid in data_mes:
-                                        cluster_content = data_mes[cid]
-                                        
-                                        # Recorremos el 1er nivel de breakdown: 'test'
-                                        for test_name, targets in cluster_content.items():
-                                            if not isinstance(targets, dict): continue
-                                            
-                                            # Recorremos el 2do nivel: 'target'
-                                            for target_addr, details in targets.items():
-                                                if not isinstance(details, dict): continue
-                                                
-                                                count = details.get("meduxId", {}).get("count", 0)
-                                                
-                                                # Mapeo a las columnas según test y target
-                                                col = None
-                                                if test_name == "ping-test":
-                                                    if IP_NACIONAL in target_addr:
-                                                        col = "Ping Nacional"
-                                                    elif IP_INTERNACIONAL in target_addr:
-                                                        col = "Ping Internacional"
-                                                elif test_name == "http-down-burst-test":
-                                                    col = "HTTP Download"
-                                                elif test_name == "http-upload-burst-test":
-                                                    col = "HTTP Upload"
-                                                
-                                                if col:
-                                                    df_actual.loc[mask, col] += count
-                                        
-                                        df_actual.loc[mask, "Estado"] = "✅ OK"
-                                    else:
-                                        if df_actual.loc[mask, "Estado"].values[0] != "✅ OK":
-                                            df_actual.loc[mask, "Estado"] = "⚪ Sin Datos"
-                                
-                                elif response.status_code == 403:
-                                    clusters_403.append(cid)
-                                    df_actual.loc[mask, "Estado"] = "🚫 403"
-
-                            except Exception:
-                                continue
-
-                        progress_bar.empty()
-                        status_text.empty()
-                        st.session_state[state_key] = df_actual
+                                    if col:
+                                        df_temp.loc[mask, col] += count
                         
-                        if clusters_403:
-                            with st.expander("Clusters con error de permisos (403)"):
-                                st.write(clusters_403)
-                        
-                        st.rerun()
+                        df_temp.loc[mask, "Estado"] = "✅ OK"
+                        st.session_state[sk] = df_temp
+                elif response.status_code == 403:
+                    op_pertenece = df_master[df_master['id'] == cid]['operador'].values[0]
+                    sk = f"df_{op_pertenece}_{mes_key}"
+                    mask = st.session_state[sk]['id'].apply(lambda x: cid in x)
+                    st.session_state[sk].loc[mask, "Estado"] = "🚫 403"
+            except:
+                continue
 
-                with col_info:
-                    st.info(f"Sincronizando {op} para {mes_key}. Desglose por Cluster, Test y Target.")
+        progress_bar.empty()
+        status_text.empty()
+        st.success("¡Sincronización global completada!")
+        st.rerun()
 
-                # --- VISUALIZACIÓN ---
-                df_viz = df_actual.copy()
-                df_viz['provincia'] = df_viz['provincia'].str.title()
-                df_viz['canton'] = df_viz['canton'].str.title()
-                df_viz = df_viz.set_index(['provincia', 'canton'])
+    # --- RENDERIZADO DE PESTAÑAS ---
+    tabs = st.tabs([f"Hoja {op}" for op in operadores])
 
-                st.dataframe(
-                    df_viz[["Estado"] + METRICAS].style.applymap(
-                        lambda x: 'color: red' if x == '🚫 403' else ('color: green' if x == '✅ OK' else ''),
-                        subset=['Estado']
-                    ).background_gradient(cmap='Blues', subset=METRICAS).format("{:d}", subset=METRICAS),
-                    use_container_width=True,
-                    height=600
-                )
+    for i, op in enumerate(operadores):
+        with tabs[i]:
+            state_key = f"df_{op}_{mes_key}"
+            
+            # Si no se ha sincronizado nada, inicializar vista vacía
+            if state_key not in st.session_state:
+                df_op_base = df_master[df_master['operador'] == op].copy()
+                df_grouped = df_op_base.groupby(['provincia', 'canton'])['id'].apply(list).reset_index()
+                for m in METRICAS: df_grouped[m] = 0
+                df_grouped["Estado"] = "Pendiente"
+                st.session_state[state_key] = df_grouped
+
+            df_viz = st.session_state[state_key].copy()
+            df_viz['provincia'] = df_viz['provincia'].str.title()
+            df_viz['canton'] = df_viz['canton'].str.title()
+            df_viz = df_viz.set_index(['provincia', 'canton'])
+
+            st.dataframe(
+                df_viz[["Estado"] + METRICAS].style.applymap(
+                    lambda x: 'color: red' if x == '🚫 403' else ('color: green' if x == '✅ OK' else ''),
+                    subset=['Estado']
+                ).background_gradient(cmap='Blues', subset=METRICAS).format("{:d}", subset=METRICAS),
+                use_container_width=True,
+                height=600
+            )
