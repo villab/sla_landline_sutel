@@ -6,6 +6,12 @@ from datetime import datetime
 import calendar
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
+# ------ Configuración de vista ----------
+st.set_page_config(
+    page_title="SLA Sutel Fijo", # Nombre
+    page_icon="",                # 
+    layout="wide"
+)
 
 # --- CONFIGURACIÓN DE API (Blindada para Docker) ---
 try:
@@ -99,7 +105,7 @@ if not df_master.empty:
     mes_key = f"{str(month).zfill(2)}/{year}"
     operadores = sorted(df_master['operador'].unique())
 
-    if st.button("⚡ Sincronización PARALELA (Ultra Rápida)", use_container_width=True):
+    if st.button("Obtener data SLA Entorno de medición Fijo", use_container_width=True):
         status = st.empty()
         progress_bar = st.progress(0)
         
