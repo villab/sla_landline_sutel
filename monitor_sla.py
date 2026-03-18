@@ -124,35 +124,36 @@ if not df_master.empty:
         st.success("Sincronización en paralelo terminada.")
         st.rerun()
 
-    # --- RENDERIZADO TABS ---
+# --- RENDERIZADO TABS ---
     tabs = st.tabs([f"Hoja {op}" for op in operadores])
     for i, op in enumerate(operadores):
         with tabs[i]:
             state_key = f"df_{op}_{mes_key}"
             if state_key in st.session_state:
+                # Trabajamos sobre una copia para no alterar los datos reales
                 df_viz = st.session_state[state_key].copy()
                 
-                # Formateo de nombres
+                # Formateo estético de nombres
                 df_viz['provincia'] = df_viz['provincia'].str.title()
                 df_viz['canton'] = df_viz['canton'].str.title()
                 
-                # 1. Numeración de filas (costado izquierdo)
-                df_viz = df_viz.reset_index(drop=True)
-                df_viz.index = df_viz.index + 1
-                df_viz.index.name = "#"
-
-                # Selección de columnas para mostrar
-                columnas_ver = ["Estado"] + METRICAS
+                # Creamos una columna de numeración real y la ponemos de primera
+                df_viz.insert(0, '#', range(1, len(df_viz) + 1))
                 
-                # 2 y 3. Estilo de colores y Ampliación de tabla (height=1000)
+                # Seleccionamos el orden de las columnas
+                columnas_finales = ["#", "provincia", "canton", "Estado"] + METRICAS
+                df_final = df_viz[columnas_finales]
+
+                # Aplicamos el estilo mejorado
                 st.dataframe(
-                    df_viz[columnas_ver].style.applymap(
+                    df_final.style.applymap(
                         aplicar_color_semaforo, 
                         subset=METRICAS
                     ).applymap(
-                        lambda x: 'color: red; font-weight: bold' if x == '🚫 403' else ('color: green' if x == '✅ OK' else ''),
+                        lambda x: 'color: #d63031; font-weight: bold' if '403' in str(x) else ('color: #27ae60; font-weight: bold' if 'OK' in str(x) else ''),
                         subset=['Estado']
                     ).format("{:d}", subset=METRICAS),
                     use_container_width=True,
-                    height=1000 # Más filas visibles hacia abajo
+                    height=800,
+                    hide_index=True  # <-- ESTO QUITA LA COLUMNA GRIS DE LA IZQUIERDA
                 )
