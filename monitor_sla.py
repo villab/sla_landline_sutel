@@ -6,36 +6,6 @@ from datetime import datetime
 import calendar
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# --- 1. AUTENTICACIÓN ---
-def check_password():
-    """Retorna True si el usuario introdujo las credenciales correctas."""
-    
-    # Obtener credenciales del entorno (Docker)
-    VALID_USER = os.getenv("admin_user")
-    VALID_PASS = os.getenv("admin_password")
-
-    if "auth_ok" not in st.session_state:
-        st.session_state["auth_ok"] = False
-
-    if st.session_state["auth_ok"]:
-        return True
-
-    # Formulario de login
-    st.title("🔒 Acceso Restringido")
-    user = st.text_input("Usuario")
-    password = st.text_input("Contraseña", type="password")
-    
-    if st.button("Entrar"):
-        if user == VALID_USER and password == VALID_PASS:
-            st.session_state["auth_ok"] = True
-            st.rerun()
-        else:
-            st.error("😕 Usuario o contraseña incorrectos")
-    return False
-
-# Ejecutar el check antes de cualquier otra cosa
-if not check_password():
-    st.stop() # Detiene la app aquí si no se ha logueado
 
 # ------ Configuración de página ----------
 st.set_page_config(
