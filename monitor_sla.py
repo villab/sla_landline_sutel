@@ -93,11 +93,11 @@ if not df_master.empty:
     mes_key = f"{str(month).zfill(2)}/{year}"
     operadores = sorted(df_master['operador'].unique())
 
-    if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
+if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
         status = st.empty()
         progress_bar = st.progress(0)
         
-        # 1. Inicializar
+        # 1. Inicializar estructuras en session_state (Hilo Principal)
         for op in operadores:
             state_key = f"df_{op}_{mes_key}"
             df_op_init = df_master[df_master['operador'] == op].copy()
@@ -109,44 +109,43 @@ if not df_master.empty:
         todos_ids = df_master['id'].unique().tolist()
         results_list = []
         
-        # 2. Descargar
-        with ThreadPoolExecutor(max_workers=10) as executor:
+        # 2. Descarga multihilo (Solo descarga, no procesa session_state aquí)
+        with ThreadPoolExecutor(max_workers=15) as executor:
             futures = {executor.submit(fetch_cluster_data, cid, ts_start, ts_end, mes_key): cid for cid in todos_ids}
             for i, future in enumerate(as_completed(futures)):
                 results_list.append(future.result())
                 progress_bar.progress((i + 1) / len(todos_ids))
                 status.text(f"Descargando clusters: {i+1}/{len(todos_ids)}")
 
-        # 3. PROCESAR (Asegurarse de que esto ocurra ANTES del rerun)
-# 3. PROCESAR (Ajustado a la estructura real de Medux)
+        # 3. Procesamiento (Hilo Principal - Seguro para session_state)
+        status.text("Procesando datos descargados...")
         for cid, res_json, code in results_list:
             row_master = df_master[df_master['id'] == cid]
             if row_master.empty: continue
             
             op_pertenece = row_master['operador'].values[0]
-            df_state = st.session_state[f"df_{op_pertenece}_{mes_key}"]
+            state_key = f"df_{op_pertenece}_{mes_key}"
+            
+            # Verificamos que el DataFrame exista en el estado
+            if state_key not in st.session_state: continue
+            df_state = st.session_state[state_key]
             
             idx_list = df_state[df_state['id'] == cid].index
             if len(idx_list) == 0: continue
             idx = idx_list[0]
 
             if code == 200 and res_json:
-                # Accedemos a results -> mes_key -> cluster_id
-                # Usamos .get() en cascada para evitar errores si una llave falta
+                # Acceso exacto según el JSON que me pasaste
                 data_cluster = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
                 
                 if data_cluster:
-                    # Iteramos sobre los tests (ej: http-down-burst-test)
                     for test_name, targets in data_cluster.items():
                         if isinstance(targets, dict):
-                            # Iteramos sobre los targets (la URL o IP)
                             for target_key, details in targets.items():
-                                # El JSON muestra que 'details' es el objeto con 'meduxId'
                                 count = details.get("meduxId", {}).get("count", 0)
                                 
                                 col = None
                                 if "ping" in test_name:
-                                    # Comparamos el target_key directamente
                                     col = "Ping Nacional" if IP_NACIONAL in str(target_key) else "Ping Internacional"
                                 elif "down" in test_name: 
                                     col = "HTTP Download"
@@ -154,14 +153,12 @@ if not df_master.empty:
                                     col = "HTTP Upload"
                                 
                                 if col:
-                                    # Sumamos al valor existente en la tabla
-                                    valor_actual = df_state.at[idx, col]
-                                    df_state.at[idx, col] = int(valor_actual) + int(count)
+                                    # Suma usando .at para máxima precisión
+                                    df_state.at[idx, col] = int(df_state.at[idx, col]) + int(count)
                     
                     df_state.at[idx, "estado"] = "✅ OK"
                 else:
-                    # Esto pasa si el Cluster ID no viene en el JSON de ese mes
-                    df_state.at[idx, "estado"] = "⚠️ No encontrado"
+                    df_state.at[idx, "estado"] = "⚠️ No en JSON"
             else:
                 df_state.at[idx, "estado"] = f"❌ Error {code}"
 
