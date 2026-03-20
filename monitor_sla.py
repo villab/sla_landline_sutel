@@ -118,6 +118,7 @@ if not df_master.empty:
                 status.text(f"Descargando clusters: {i+1}/{len(todos_ids)}")
 
         # 3. PROCESAR (Asegurarse de que esto ocurra ANTES del rerun)
+# 3. PROCESAR (Ajustado a la estructura real de Medux)
         for cid, res_json, code in results_list:
             row_master = df_master[df_master['id'] == cid]
             if row_master.empty: continue
@@ -130,23 +131,37 @@ if not df_master.empty:
             idx = idx_list[0]
 
             if code == 200 and res_json:
-                data_mes = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
-                if data_mes:
-                    for test_name, targets in data_mes.items():
+                # Accedemos a results -> mes_key -> cluster_id
+                # Usamos .get() en cascada para evitar errores si una llave falta
+                data_cluster = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
+                
+                if data_cluster:
+                    # Iteramos sobre los tests (ej: http-down-burst-test)
+                    for test_name, targets in data_cluster.items():
                         if isinstance(targets, dict):
-                            for tgt, details in targets.items():
+                            # Iteramos sobre los targets (la URL o IP)
+                            for target_key, details in targets.items():
+                                # El JSON muestra que 'details' es el objeto con 'meduxId'
                                 count = details.get("meduxId", {}).get("count", 0)
+                                
                                 col = None
                                 if "ping" in test_name:
-                                    col = "Ping Nacional" if IP_NACIONAL in tgt else "Ping Internacional"
-                                elif "down" in test_name: col = "HTTP Download"
-                                elif "upload" in test_name: col = "HTTP Upload"
+                                    # Comparamos el target_key directamente
+                                    col = "Ping Nacional" if IP_NACIONAL in str(target_key) else "Ping Internacional"
+                                elif "down" in test_name: 
+                                    col = "HTTP Download"
+                                elif "upload" in test_name: 
+                                    col = "HTTP Upload"
                                 
                                 if col:
-                                    df_state.at[idx, col] = df_state.at[idx, col] + count
+                                    # Sumamos al valor existente en la tabla
+                                    valor_actual = df_state.at[idx, col]
+                                    df_state.at[idx, col] = int(valor_actual) + int(count)
+                    
                     df_state.at[idx, "estado"] = "✅ OK"
                 else:
-                    df_state.at[idx, "estado"] = "⚠️ Vacío"
+                    # Esto pasa si el Cluster ID no viene en el JSON de ese mes
+                    df_state.at[idx, "estado"] = "⚠️ No encontrado"
             else:
                 df_state.at[idx, "estado"] = f"❌ Error {code}"
 
