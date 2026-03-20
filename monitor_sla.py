@@ -116,37 +116,46 @@ if not df_master.empty:
                 status.text(f"Descargando clusters: {i+1}/{len(todos_ids)}")
 
         # Procesar resultados
+# Procesar resultados
         for cid, res_json, code in results_list:
             row_master = df_master[df_master['id'] == cid]
             if row_master.empty: continue
             
             op_pertenece = row_master['operador'].values[0]
             df_state = st.session_state[f"df_{op_pertenece}_{mes_key}"]
-            idx = df_state[df_state['id'] == cid].index
+            
+            # Buscamos el índice exacto de este cluster en el DataFrame del operador
+            idx_list = df_state[df_state['id'] == cid].index
+            if len(idx_list) == 0: continue
+            idx = idx_list[0]
 
             if code == 200 and res_json:
-                data_mes = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
+                # Extraemos los resultados del JSON
+                results_map = res_json.get("results", {})
+                # Buscamos por la mes_key (ej: "03/2026"), si no existe, tomamos la primera disponible
+                data_mes = results_map.get(mes_key, results_map.get(next(iter(results_map), {}), {})).get(cid, {})
+
                 for test_name, targets in data_mes.items():
                     if isinstance(targets, dict):
                         for tgt, details in targets.items():
                             count = details.get("meduxId", {}).get("count", 0)
                             col = None
+                            
                             if "ping" in test_name:
                                 col = "Ping Nacional" if IP_NACIONAL in tgt else "Ping Internacional"
-                            elif "down" in test_name: col = "HTTP Download"
-                            elif "upload" in test_name: col = "HTTP Upload"
+                            elif "down" in test_name: 
+                                col = "HTTP Download"
+                            elif "upload" in test_name: 
+                                col = "HTTP Upload"
                             
-                            # CORRECCIÓN: Sumar en lugar de asignar para capturar todos los targets
-                            if col: 
-                                valor_actual = df_state.loc[idx, col].values[0]
-                                df_state.loc[idx, col] = valor_actual + count
-                df_state.loc[idx, "estado"] = "✅ OK"
+                            if col:
+                                # SUMA SEGURA: Sumamos directamente a la celda usando .at
+                                valor_actual = df_state.at[idx, col]
+                                df_state.at[idx, col] = valor_actual + count
+                
+                df_state.at[idx, "estado"] = "✅ OK"
             else:
-                df_state.loc[idx, "estado"] = f"❌ Error {code}"
-
-        st.success("Sincronización finalizada.")
-        st.rerun()
-
+                df_state.at[idx, "estado"] = f"❌ Error {code}"
     # --- RENDERIZADO ---
     tabs = st.tabs([f"OPERADOR: {op}" for op in operadores])
     for i, op in enumerate(operadores):
