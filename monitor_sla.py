@@ -57,7 +57,6 @@ def load_data():
         return pd.DataFrame()
 
 def fetch_cluster_data(cid, ts_start, ts_end, mes_key):
-    # Se añade "limit": 10000 para evitar truncado de datos en clusters grandes
     payload = {
         "tsStart": ts_start, 
         "tsEnd": ts_end, 
@@ -98,17 +97,19 @@ if not df_master.empty:
         status = st.empty()
         progress_bar = st.progress(0)
         
+        # 1. Inicializar
         for op in operadores:
             state_key = f"df_{op}_{mes_key}"
             df_op_init = df_master[df_master['operador'] == op].copy()
             for m in METRICAS: 
-                df_op_init[m] = 0 # <-- Esto asegura que empiecen en cero numérico
+                df_op_init[m] = 0
             df_op_init["estado"] = "Pendiente"
             st.session_state[state_key] = df_op_init
 
         todos_ids = df_master['id'].unique().tolist()
         results_list = []
         
+        # 2. Descargar
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = {executor.submit(fetch_cluster_data, cid, ts_start, ts_end, mes_key): cid for cid in todos_ids}
             for i, future in enumerate(as_completed(futures)):
@@ -116,8 +117,7 @@ if not df_master.empty:
                 progress_bar.progress((i + 1) / len(todos_ids))
                 status.text(f"Descargando clusters: {i+1}/{len(todos_ids)}")
 
-        # Procesar resultados
-# Procesar resultados - VERSIÓN REPARADA
+        # 3. PROCESAR (Asegurarse de que esto ocurra ANTES del rerun)
         for cid, res_json, code in results_list:
             row_master = df_master[df_master['id'] == cid]
             if row_master.empty: continue
@@ -125,42 +125,34 @@ if not df_master.empty:
             op_pertenece = row_master['operador'].values[0]
             df_state = st.session_state[f"df_{op_pertenece}_{mes_key}"]
             
-            # Buscamos la posición de la fila
             idx_list = df_state[df_state['id'] == cid].index
             if len(idx_list) == 0: continue
             idx = idx_list[0]
 
             if code == 200 and res_json:
-                # Volvemos a tu ruta original que sí funcionaba
                 data_mes = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
-                
                 if data_mes:
                     for test_name, targets in data_mes.items():
                         if isinstance(targets, dict):
                             for tgt, details in targets.items():
                                 count = details.get("meduxId", {}).get("count", 0)
                                 col = None
-                                
                                 if "ping" in test_name:
                                     col = "Ping Nacional" if IP_NACIONAL in tgt else "Ping Internacional"
-                                elif "down" in test_name: 
-                                    col = "HTTP Download"
-                                elif "upload" in test_name: 
-                                    col = "HTTP Upload"
+                                elif "down" in test_name: col = "HTTP Download"
+                                elif "upload" in test_name: col = "HTTP Upload"
                                 
                                 if col:
-                                    # LA SUMA MÁS SIMPLE POSIBLE:
-                                    # Usamos += directamente sobre la celda. 
-                                    # Esto asume que la celda ya tiene un 0 (que pusimos arriba al inicializar)
-                                    df_state.loc[idx, col] = df_state.loc[idx, col] + count
-                    
-                    df_state.loc[idx, "estado"] = "✅ OK"
+                                    df_state.at[idx, col] = df_state.at[idx, col] + count
+                    df_state.at[idx, "estado"] = "✅ OK"
                 else:
-                    df_state.loc[idx, "estado"] = "⚠️ Vacío en JSON"
+                    df_state.at[idx, "estado"] = "⚠️ Vacío"
             else:
-                df_state.loc[idx, "estado"] = f"❌ Error {code}"
-                
-    
+                df_state.at[idx, "estado"] = f"❌ Error {code}"
+
+        st.success("Sincronización finalizada.")
+        st.rerun()
+
     # --- RENDERIZADO ---
     tabs = st.tabs([f"OPERADOR: {op}" for op in operadores])
     for i, op in enumerate(operadores):
