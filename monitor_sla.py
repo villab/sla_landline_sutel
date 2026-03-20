@@ -166,32 +166,47 @@ if not df_master.empty:
         st.rerun()
 
     # --- RENDERIZADO DE TABS ---
+# --- RENDERIZADO DE TABS ---
     tabs = st.tabs([f"OPERADOR: {op}" for op in operadores])
     for i, op in enumerate(operadores):
         with tabs[i]:
             state_key = f"df_{op}_{mes_key}"
+            
+            # 1. Verificar si hay datos en el estado para este operador/mes
             if state_key in st.session_state:
-                df_viz = st.session_state[state_key].copy()
+                # IMPORTANTE: Usamos el DataFrame directamente del session_state
+                df_actual = st.session_state[state_key]
                 
+                # Filtro de búsqueda (si aplica)
                 if busqueda:
-                    df_viz = df_viz[df_viz['name'].str.contains(busqueda, case=False, na=False)]
+                    df_viz = df_actual[df_actual['name'].str.contains(busqueda, case=False, na=False)].copy()
+                else:
+                    df_viz = df_actual.copy()
 
+                # 2. Lógica de Agrupación
                 if tipo_vista == "Por Cantón (Resumen)":
+                    # Aseguramos que las métricas sean numéricas antes de sumar
+                    for m in METRICAS:
+                        df_viz[m] = pd.to_numeric(df_viz[m], errors='coerce').fillna(0)
+                    
                     df_final = df_viz.groupby(['provincia', 'canton'])[METRICAS].sum().reset_index()
                     df_final["Estado"] = "📊 Resumen"
                     columnas_finales = ["provincia", "canton", "Estado"] + METRICAS
                 else:
+                    # Vista detalle
                     df_final = df_viz.rename(columns={'estado': 'Estado'})
                     columnas_finales = ["provincia", "canton", "name", "Estado"] + METRICAS
 
+                # Estética
                 df_final['provincia'] = df_final['provincia'].str.title()
                 df_final['canton'] = df_final['canton'].str.title()
                 df_final.insert(0, '#', range(1, len(df_final) + 1))
 
+                # 3. Mostrar Tabla
                 st.dataframe(
-                    df_final[["#"] + columnas_finales].style.applymap(
+                    df_final[["#"] + columnas_finales].style.map(
                         aplicar_color_semaforo, subset=METRICAS
-                    ).applymap(
+                    ).map(
                         lambda x: 'color: #d63031; font-weight: bold' if 'Error' in str(x) else ('color: #27ae60; font-weight: bold' if 'OK' in str(x) else ''),
                         subset=['Estado']
                     ).format("{:,.0f}", subset=METRICAS),
