@@ -61,7 +61,6 @@ def fetch_cluster_data(cid, ts_start, ts_end, mes_key):
         "tsStart": ts_start, 
         "tsEnd": ts_end, 
         "format": "aggregate",
-        "limit": 10000,
         "programs": ["http-upload-burst-test", "http-down-burst-test", "ping-test"],
         "clusters": [cid],
         "aggregate": {
