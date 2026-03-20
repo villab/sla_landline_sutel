@@ -93,11 +93,12 @@ if not df_master.empty:
     mes_key = f"{str(month).zfill(2)}/{year}"
     operadores = sorted(df_master['operador'].unique())
 
-if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
+    # --- BOTÓN DE SINCRONIZACIÓN ---
+    if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
         status = st.empty()
         progress_bar = st.progress(0)
         
-        # 1. Inicializar estructuras en session_state (Hilo Principal)
+        # 1. Inicializar estructuras en session_state
         for op in operadores:
             state_key = f"df_{op}_{mes_key}"
             df_op_init = df_master[df_master['operador'] == op].copy()
@@ -109,7 +110,7 @@ if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
         todos_ids = df_master['id'].unique().tolist()
         results_list = []
         
-        # 2. Descarga multihilo (Solo descarga, no procesa session_state aquí)
+        # 2. Descarga multihilo
         with ThreadPoolExecutor(max_workers=15) as executor:
             futures = {executor.submit(fetch_cluster_data, cid, ts_start, ts_end, mes_key): cid for cid in todos_ids}
             for i, future in enumerate(as_completed(futures)):
@@ -117,7 +118,7 @@ if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
                 progress_bar.progress((i + 1) / len(todos_ids))
                 status.text(f"Descargando clusters: {i+1}/{len(todos_ids)}")
 
-        # 3. Procesamiento (Hilo Principal - Seguro para session_state)
+        # 3. Procesamiento en el Hilo Principal
         status.text("Procesando datos descargados...")
         for cid, res_json, code in results_list:
             row_master = df_master[df_master['id'] == cid]
@@ -126,7 +127,6 @@ if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
             op_pertenece = row_master['operador'].values[0]
             state_key = f"df_{op_pertenece}_{mes_key}"
             
-            # Verificamos que el DataFrame exista en el estado
             if state_key not in st.session_state: continue
             df_state = st.session_state[state_key]
             
@@ -135,7 +135,6 @@ if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
             idx = idx_list[0]
 
             if code == 200 and res_json:
-                # Acceso exacto según el JSON que me pasaste
                 data_cluster = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
                 
                 if data_cluster:
@@ -143,7 +142,6 @@ if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
                         if isinstance(targets, dict):
                             for target_key, details in targets.items():
                                 count = details.get("meduxId", {}).get("count", 0)
-                                
                                 col = None
                                 if "ping" in test_name:
                                     col = "Ping Nacional" if IP_NACIONAL in str(target_key) else "Ping Internacional"
@@ -153,7 +151,6 @@ if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
                                     col = "HTTP Upload"
                                 
                                 if col:
-                                    # Suma usando .at para máxima precisión
                                     df_state.at[idx, col] = int(df_state.at[idx, col]) + int(count)
                     
                     df_state.at[idx, "estado"] = "✅ OK"
@@ -165,7 +162,7 @@ if st.button("🔄 Sincronizar Datos Medux", use_container_width=True):
         st.success("Sincronización finalizada.")
         st.rerun()
 
-    # --- RENDERIZADO ---
+    # --- RENDERIZADO DE TABS ---
     tabs = st.tabs([f"OPERADOR: {op}" for op in operadores])
     for i, op in enumerate(operadores):
         with tabs[i]:
