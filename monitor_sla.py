@@ -101,7 +101,8 @@ if not df_master.empty:
         for op in operadores:
             state_key = f"df_{op}_{mes_key}"
             df_op_init = df_master[df_master['operador'] == op].copy()
-            for m in METRICAS: df_op_init[m] = 0
+            for m in METRICAS: 
+                df_op_init[m] = 0 # <-- Esto asegura que empiecen en cero numérico
             df_op_init["estado"] = "Pendiente"
             st.session_state[state_key] = df_op_init
 
