@@ -135,6 +135,9 @@ if not df_master.empty:
             idx = idx_list[0]
 
             if code == 200 and res_json:
+# ESTO IMPRIMIRÁ EN LA CONSOLA DE DOCKER (No en la web)
+                if cid == "CLUSTER-910ae36d-9051-8aab-9051-8aac90518aad":
+                    print(f"DEBUG JSON: {res_json}")                
                 data_cluster = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
                 
                 if data_cluster:
