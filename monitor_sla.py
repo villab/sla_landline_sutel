@@ -116,7 +116,7 @@ if not df_master.empty:
                 status.text(f"Descargando clusters: {i+1}/{len(todos_ids)}")
 
         # Procesar resultados
-# Procesar resultados
+# Procesar resultados - VERSIÓN REPARADA
         for cid, res_json, code in results_list:
             row_master = df_master[df_master['id'] == cid]
             if row_master.empty: continue
@@ -124,38 +124,42 @@ if not df_master.empty:
             op_pertenece = row_master['operador'].values[0]
             df_state = st.session_state[f"df_{op_pertenece}_{mes_key}"]
             
-            # Buscamos el índice exacto de este cluster en el DataFrame del operador
+            # Buscamos la posición de la fila
             idx_list = df_state[df_state['id'] == cid].index
             if len(idx_list) == 0: continue
             idx = idx_list[0]
 
             if code == 200 and res_json:
-                # Extraemos los resultados del JSON
-                results_map = res_json.get("results", {})
-                # Buscamos por la mes_key (ej: "03/2026"), si no existe, tomamos la primera disponible
-                data_mes = results_map.get(mes_key, results_map.get(next(iter(results_map), {}), {})).get(cid, {})
-
-                for test_name, targets in data_mes.items():
-                    if isinstance(targets, dict):
-                        for tgt, details in targets.items():
-                            count = details.get("meduxId", {}).get("count", 0)
-                            col = None
-                            
-                            if "ping" in test_name:
-                                col = "Ping Nacional" if IP_NACIONAL in tgt else "Ping Internacional"
-                            elif "down" in test_name: 
-                                col = "HTTP Download"
-                            elif "upload" in test_name: 
-                                col = "HTTP Upload"
-                            
-                            if col:
-                                # SUMA SEGURA: Sumamos directamente a la celda usando .at
-                                valor_actual = df_state.at[idx, col]
-                                df_state.at[idx, col] = valor_actual + count
+                # Volvemos a tu ruta original que sí funcionaba
+                data_mes = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
                 
-                df_state.at[idx, "estado"] = "✅ OK"
+                if data_mes:
+                    for test_name, targets in data_mes.items():
+                        if isinstance(targets, dict):
+                            for tgt, details in targets.items():
+                                count = details.get("meduxId", {}).get("count", 0)
+                                col = None
+                                
+                                if "ping" in test_name:
+                                    col = "Ping Nacional" if IP_NACIONAL in tgt else "Ping Internacional"
+                                elif "down" in test_name: 
+                                    col = "HTTP Download"
+                                elif "upload" in test_name: 
+                                    col = "HTTP Upload"
+                                
+                                if col:
+                                    # LA SUMA MÁS SIMPLE POSIBLE:
+                                    # Usamos += directamente sobre la celda. 
+                                    # Esto asume que la celda ya tiene un 0 (que pusimos arriba al inicializar)
+                                    df_state.loc[idx, col] = df_state.loc[idx, col] + count
+                    
+                    df_state.loc[idx, "estado"] = "✅ OK"
+                else:
+                    df_state.loc[idx, "estado"] = "⚠️ Vacío en JSON"
             else:
-                df_state.at[idx, "estado"] = f"❌ Error {code}"
+                df_state.loc[idx, "estado"] = f"❌ Error {code}"
+                
+    
     # --- RENDERIZADO ---
     tabs = st.tabs([f"OPERADOR: {op}" for op in operadores])
     for i, op in enumerate(operadores):
