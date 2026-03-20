@@ -6,7 +6,6 @@ from datetime import datetime
 import calendar
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-
 # ------ Configuración de página ----------
 st.set_page_config(
     page_title="SLA Control",
@@ -49,9 +48,7 @@ def aplicar_color_semaforo(val):
 def load_data():
     try:
         df = pd.read_excel('Clusters_Sutel_Fijo2026.xlsx', engine='openpyxl')
-        # Limpiar nombres de columnas
         df.columns = [str(c).strip().lower() for c in df.columns]
-        # Asegurar que existan las columnas necesarias
         if 'id' not in df.columns and 'cluster' in df.columns:
             df = df.rename(columns={'cluster': 'id'})
         return df
@@ -60,8 +57,12 @@ def load_data():
         return pd.DataFrame()
 
 def fetch_cluster_data(cid, ts_start, ts_end, mes_key):
+    # Se añade "limit": 10000 para evitar truncado de datos en clusters grandes
     payload = {
-        "tsStart": ts_start, "tsEnd": ts_end, "format": "aggregate",
+        "tsStart": ts_start, 
+        "tsEnd": ts_end, 
+        "format": "aggregate",
+        "limit": 10000,
         "programs": ["http-upload-burst-test", "http-down-burst-test", "ping-test"],
         "clusters": [cid],
         "aggregate": {
@@ -97,10 +98,8 @@ if not df_master.empty:
         status = st.empty()
         progress_bar = st.progress(0)
         
-        # Inicializar estructuras en session_state por cluster individual
         for op in operadores:
             state_key = f"df_{op}_{mes_key}"
-            # Guardamos el detalle completo del master para ese operador
             df_op_init = df_master[df_master['operador'] == op].copy()
             for m in METRICAS: df_op_init[m] = 0
             df_op_init["estado"] = "Pendiente"
@@ -136,7 +135,11 @@ if not df_master.empty:
                                 col = "Ping Nacional" if IP_NACIONAL in tgt else "Ping Internacional"
                             elif "down" in test_name: col = "HTTP Download"
                             elif "upload" in test_name: col = "HTTP Upload"
-                            if col: df_state.loc[idx, col] = count
+                            
+                            # CORRECCIÓN: Sumar en lugar de asignar para capturar todos los targets
+                            if col: 
+                                valor_actual = df_state.loc[idx, col].values[0]
+                                df_state.loc[idx, col] = valor_actual + count
                 df_state.loc[idx, "estado"] = "✅ OK"
             else:
                 df_state.loc[idx, "estado"] = f"❌ Error {code}"
@@ -152,21 +155,17 @@ if not df_master.empty:
             if state_key in st.session_state:
                 df_viz = st.session_state[state_key].copy()
                 
-                # Filtro de búsqueda por nombre
                 if busqueda:
                     df_viz = df_viz[df_viz['name'].str.contains(busqueda, case=False, na=False)]
 
                 if tipo_vista == "Por Cantón (Resumen)":
-                    # Agrupamos sumando métricas
                     df_final = df_viz.groupby(['provincia', 'canton'])[METRICAS].sum().reset_index()
                     df_final["Estado"] = "📊 Resumen"
                     columnas_finales = ["provincia", "canton", "Estado"] + METRICAS
                 else:
-                    # Vista detalle con la columna NAME del excel
                     df_final = df_viz.rename(columns={'estado': 'Estado'})
                     columnas_finales = ["provincia", "canton", "name", "Estado"] + METRICAS
 
-                # Estética
                 df_final['provincia'] = df_final['provincia'].str.title()
                 df_final['canton'] = df_final['canton'].str.title()
                 df_final.insert(0, '#', range(1, len(df_final) + 1))
