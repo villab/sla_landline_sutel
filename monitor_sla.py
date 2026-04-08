@@ -138,11 +138,21 @@ if not df_master.empty:
                     if isinstance(res_json[0], dict):
                         actual_data = res_json[0]
 
-                # --- NAVEGACIÓN SEGURA ---
+# --- NAVEGACIÓN SEGURA ---
                 data_cluster = {}
+                # Verificamos que actual_data sea dict antes de llamar a .get()
                 if isinstance(actual_data, dict):
                     data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
+                else:
+                    # Si llega aquí, es que actual_data es una lista []. 
+                    # Intentamos pelarla una última vez por si acaso.
+                    if isinstance(actual_data, list) and len(actual_data) > 0:
+                        temp_dict = actual_data[0]
+                        if isinstance(temp_dict, dict):
+                            data_cluster = temp_dict.get("results", {}).get(mes_key, {}).get(cid, {})
 
+
+                
                 if data_cluster and isinstance(data_cluster, dict):
                     for test_name, targets in data_cluster.items():
                         if isinstance(targets, dict):
