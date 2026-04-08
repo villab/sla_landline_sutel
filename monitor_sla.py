@@ -134,43 +134,49 @@ if not df_master.empty:
             idx = idx_list[0]
 
             if code == 200 and res_json:
-                # 1. Limpieza: Aseguramos que actual_data sea el primer diccionario útil
-                actual_data = res_json
-                
-                # Si es una lista, entramos al primer elemento repetidamente hasta hallar un dict
-                while isinstance(actual_data, list) and len(actual_data) > 0:
-                    actual_data = actual_data[0]
-                
-                # 2. DEBUG: Si sigue fallando, esto nos dirá qué es actual_data realmente
-                if not isinstance(actual_data, dict):
-                     st.error(f"Error: Se esperaba un diccionario pero se recibió un {type(actual_data)}")
-                     st.write("Contenido real:", actual_data)
-                     st.stop() # Detiene la ejecución para que no explote abajo
-
-                # 3. Navegación segura
-                data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
+                            # --- LIMPIEZA ROBUSTA ---
+                            # Si es una lista (ej. Postman devolvió [ {...} ]), extraemos el primer dict
+                            if isinstance(res_json, list) and len(res_json) > 0:
+                                actual_data = res_json[0]
+                            else:
+                                actual_data = res_json
                             
-                if data_cluster:
-                    for test_name, targets in data_cluster.items():
-                        if isinstance(targets, dict):
-                            for target_key, details in targets.items():
-                                count = details.get("meduxId", {}).get("count", 0)
-                                col = None
-                                if "ping" in test_name:
-                                    col = "Ping Nacional" if IP_NACIONAL in str(target_key) else "Ping Internacional"
-                                elif "down" in test_name: 
-                                    col = "HTTP Download"
-                                elif "upload" in test_name: 
-                                    col = "HTTP Upload"
+                            # Verificación de seguridad: si no es un dict tras la limpieza, saltamos
+                            if not isinstance(actual_data, dict):
+                                df_state.at[idx, "estado"] = "⚠️ Formato Inesperado"
+                                continue
+            
+                            # Navegación segura: usamos .get() encadenado
+                            # Estructura: results -> 04/2026 -> CID
+                            data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
+                                                        
+                            if data_cluster:
+                                for test_name, targets in data_cluster.items():
+                                    if isinstance(targets, dict):
+                                        for target_key, details in targets.items():
+                                            # El .get() aquí también debe ser robusto
+                                            medux_data = details.get("meduxId", {})
+                                            if isinstance(medux_data, dict):
+                                                count = medux_data.get("count", 0)
+                                            else:
+                                                count = 0
+                                                
+                                            col = None
+                                            if "ping" in test_name:
+                                                col = "Ping Nacional" if IP_NACIONAL in str(target_key) else "Ping Internacional"
+                                            elif "down" in test_name: 
+                                                col = "HTTP Download"
+                                            elif "upload" in test_name: 
+                                                col = "HTTP Upload"
+                                            
+                                            if col:
+                                                # Aseguramos que el valor actual sea numérico antes de sumar
+                                                valor_actual = pd.to_numeric(df_state.at[idx, col], errors='coerce') or 0
+                                                df_state.at[idx, col] = int(valor_actual) + int(count)
                                 
-                                if col:
-                                    df_state.at[idx, col] = int(df_state.at[idx, col]) + int(count)
-                    
-                    df_state.at[idx, "estado"] = "✅ OK"
-                else:
-                    df_state.at[idx, "estado"] = "⚠️ No en JSON"
-            else:
-                df_state.at[idx, "estado"] = f"❌ Error {code}"
+                                df_state.at[idx, "estado"] = "✅ OK"
+                            else:
+                                df_state.at[idx, "estado"] = "⚠️ No en JSON"
 
         st.success("Sincronización finalizada.")
         st.rerun()
