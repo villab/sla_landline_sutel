@@ -130,18 +130,14 @@ if not df_master.empty:
             idx = idx_list[0]
 
             if code == 200 and res_json:
-                # 1. LIMPIEZA INICIAL: Extraer el diccionario real
                 actual_data = res_json
                 if isinstance(res_json, list) and len(res_json) > 0:
                     actual_data = res_json[0]
-                
-                # 2. NAVEGACIÓN SEGURA: Buscamos el cluster solo si es un diccionario
+
                 data_cluster = {}
                 if isinstance(actual_data, dict):
-                    # El uso de .get() encadenado es seguro aquí
                     data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
                 
-                # 3. PROCESAMIENTO DE MÉTRICAS
                 if data_cluster and isinstance(data_cluster, dict):
                     for test_name, targets in data_cluster.items():
                         if isinstance(targets, dict):
@@ -159,7 +155,6 @@ if not df_master.empty:
                                         col = "HTTP Upload"
                                     
                                     if col:
-                                        # Evitamos errores de tipo al sumar
                                         valor_previo = pd.to_numeric(df_state.at[idx, col], errors='coerce') or 0
                                         df_state.at[idx, col] = int(valor_previo) + int(count)
                     
