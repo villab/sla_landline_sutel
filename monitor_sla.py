@@ -134,17 +134,22 @@ if not df_master.empty:
             idx = idx_list[0]
 
             if code == 200 and res_json:
-# ESTO IMPRIMIRÁ EN LA CONSOLA DE DOCKER (No en la web)
-                if isinstance(res_json, list):
-                    actual_data = res_json[0] if len(res_json) > 0 else {}
-                else:
-                    actual_data = res_json            
-                            
-                if cid == "CLUSTER-910ae36d-9051-8aab-9051-8aac90518aad":
-                    print(f"DEBUG JSON: {res_json}")                
-                # data_cluster = res_json.get("results", {}).get(mes_key, {}).get(cid, {})
-                data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
+                # 1. Limpieza: Aseguramos que actual_data sea el primer diccionario útil
+                actual_data = res_json
                 
+                # Si es una lista, entramos al primer elemento repetidamente hasta hallar un dict
+                while isinstance(actual_data, list) and len(actual_data) > 0:
+                    actual_data = actual_data[0]
+                
+                # 2. DEBUG: Si sigue fallando, esto nos dirá qué es actual_data realmente
+                if not isinstance(actual_data, dict):
+                     st.error(f"Error: Se esperaba un diccionario pero se recibió un {type(actual_data)}")
+                     st.write("Contenido real:", actual_data)
+                     st.stop() # Detiene la ejecución para que no explote abajo
+
+                # 3. Navegación segura
+                data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
+                            
                 if data_cluster:
                     for test_name, targets in data_cluster.items():
                         if isinstance(targets, dict):
