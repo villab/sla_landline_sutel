@@ -133,8 +133,7 @@ if not df_master.empty:
             if len(idx_list) == 0: continue
             idx = idx_list[0]
 
-            if code == 200 and res_json:
-                                
+            if code == 200 and res_json:                       
                 # Forzamos que actual_data sea un diccionario pase lo que pase
                 actual_data = {}
                 
@@ -179,8 +178,8 @@ if not df_master.empty:
                                     df_state.at[idx, col] = int(valor_actual) + int(count)
                     
                     df_state.at[idx, "estado"] = "✅ OK"
-                else:
-                    df_state.at[idx, "estado"] = "⚠️ No en JSON"
+            else:
+                df_state.at[idx, "estado"] = "⚠️ No en JSON"
 
         st.success("Sincronización finalizada.")
         st.rerun()
