@@ -134,22 +134,25 @@ if not df_master.empty:
             idx = idx_list[0]
 
             if code == 200 and res_json:
-                            # --- LIMPIEZA ROBUSTA ---
-                            # Si es una lista (ej. Postman devolvió [ {...} ]), extraemos el primer dict
-                            if isinstance(res_json, list) and len(res_json) > 0:
-                                actual_data = res_json[0]
-                            else:
-                                actual_data = res_json
+                            # Forzamos que actual_data sea un diccionario pase lo que pase
+                            actual_data = {}
                             
-                            # Verificación de seguridad: si no es un dict tras la limpieza, saltamos
-                            if not isinstance(actual_data, dict):
-                                df_state.at[idx, "estado"] = "⚠️ Formato Inesperado"
-                                continue
+                            if isinstance(res_json, dict):
+                                actual_data = res_json
+                            elif isinstance(res_json, list) and len(res_json) > 0:
+                                # Si es una lista, intentamos extraer el primer elemento si es dict
+                                if isinstance(res_json[0], dict):
+                                    actual_data = res_json[0]
             
-                            # Navegación segura: usamos .get() encadenado
-                            # Estructura: results -> 04/2026 -> CID
-                            data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
-                                                        
+                            # --- LA LÍNEA DE SEGURIDAD ---
+                            # Solo ejecutamos .get si confirmamos que es un diccionario
+                            data_cluster = {}
+                            if isinstance(actual_data, dict):
+                                data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
+                            else:
+                                print(f"DEBUG: res_json llegó como {type(res_json)} y no se pudo convertir.")
+                            
+                                              
                             if data_cluster:
                                 for test_name, targets in data_cluster.items():
                                     if isinstance(targets, dict):
