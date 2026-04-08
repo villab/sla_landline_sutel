@@ -97,7 +97,6 @@ if not df_master.empty:
         status = st.empty()
         progress_bar = st.progress(0)
         
-        # 1. Inicializar estructuras en session_state
         for op in operadores:
             state_key = f"df_{op}_{mes_key}"
             df_op_init = df_master[df_master['operador'] == op].copy()
@@ -109,7 +108,6 @@ if not df_master.empty:
         todos_ids = df_master['id'].unique().tolist()
         results_list = []
         
-        # 2. Descarga multihilo
         with ThreadPoolExecutor(max_workers=15) as executor:
             futures = {executor.submit(fetch_cluster_data, cid, ts_start, ts_end, mes_key): cid for cid in todos_ids}
             for i, future in enumerate(as_completed(futures)):
@@ -117,7 +115,6 @@ if not df_master.empty:
                 progress_bar.progress((i + 1) / len(todos_ids))
                 status.text(f"Descargando clusters: {i+1}/{len(todos_ids)}")
 
-        # 3. Procesamiento en el Hilo Principal
         status.text("Procesando datos descargados...")
         for cid, res_json, code in results_list:
             row_master = df_master[df_master['id'] == cid]
@@ -125,103 +122,79 @@ if not df_master.empty:
             
             op_pertenece = row_master['operador'].values[0]
             state_key = f"df_{op_pertenece}_{mes_key}"
-            
             if state_key not in st.session_state: continue
-            df_state = st.session_state[state_key]
             
+            df_state = st.session_state[state_key]
             idx_list = df_state[df_state['id'] == cid].index
             if len(idx_list) == 0: continue
             idx = idx_list[0]
 
-            if code == 200 and res_json:                       
-                # Forzamos que actual_data sea un diccionario pase lo que pase
+            if code == 200 and res_json:
+                # --- LIMPIEZA DE ESTRUCTURA ---
                 actual_data = {}
-                
                 if isinstance(res_json, dict):
                     actual_data = res_json
                 elif isinstance(res_json, list) and len(res_json) > 0:
-                    # Si es una lista, intentamos extraer el primer elemento si es dict
                     if isinstance(res_json[0], dict):
                         actual_data = res_json[0]
 
-                # --- LA LÍNEA DE SEGURIDAD ---
-                # Solo ejecutamos .get si confirmamos que es un diccionario
+                # --- NAVEGACIÓN SEGURA ---
                 data_cluster = {}
                 if isinstance(actual_data, dict):
                     data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
-                else:
-                    print(f"DEBUG: res_json llegó como {type(res_json)} y no se pudo convertir.")
 
-    
-                if data_cluster:
+                if data_cluster and isinstance(data_cluster, dict):
                     for test_name, targets in data_cluster.items():
                         if isinstance(targets, dict):
                             for target_key, details in targets.items():
-                                # El .get() aquí también debe ser robusto
-                                medux_data = details.get("meduxId", {})
-                                if isinstance(medux_data, dict):
-                                    count = medux_data.get("count", 0)
-                                else:
-                                    count = 0
+                                if isinstance(details, dict):
+                                    medux_data = details.get("meduxId", {})
+                                    count = medux_data.get("count", 0) if isinstance(medux_data, dict) else 0
                                     
-                                col = None
-                                if "ping" in test_name:
-                                    col = "Ping Nacional" if IP_NACIONAL in str(target_key) else "Ping Internacional"
-                                elif "down" in test_name: 
-                                    col = "HTTP Download"
-                                elif "upload" in test_name: 
-                                    col = "HTTP Upload"
-                                
-                                if col:
-                                    # Aseguramos que el valor actual sea numérico antes de sumar
-                                    valor_actual = pd.to_numeric(df_state.at[idx, col], errors='coerce') or 0
-                                    df_state.at[idx, col] = int(valor_actual) + int(count)
+                                    col = None
+                                    if "ping" in test_name:
+                                        col = "Ping Nacional" if IP_NACIONAL in str(target_key) else "Ping Internacional"
+                                    elif "down" in test_name: 
+                                        col = "HTTP Download"
+                                    elif "upload" in test_name: 
+                                        col = "HTTP Upload"
+                                    
+                                    if col:
+                                        valor_previo = pd.to_numeric(df_state.at[idx, col], errors='coerce') or 0
+                                        df_state.at[idx, col] = int(valor_previo) + int(count)
                     
                     df_state.at[idx, "estado"] = "✅ OK"
+                else:
+                    df_state.at[idx, "estado"] = "⚠️ No en JSON"
             else:
-                df_state.at[idx, "estado"] = "⚠️ No en JSON"
+                df_state.at[idx, "estado"] = f"❌ Error {code}"
 
         st.success("Sincronización finalizada.")
         st.rerun()
 
     # --- RENDERIZADO DE TABS ---
-# --- RENDERIZADO DE TABS ---
     tabs = st.tabs([f"OPERADOR: {op}" for op in operadores])
     for i, op in enumerate(operadores):
         with tabs[i]:
             state_key = f"df_{op}_{mes_key}"
-            
-            # 1. Verificar si hay datos en el estado para este operador/mes
             if state_key in st.session_state:
-                # IMPORTANTE: Usamos el DataFrame directamente del session_state
                 df_actual = st.session_state[state_key]
-                
-                # Filtro de búsqueda (si aplica)
-                if busqueda:
-                    df_viz = df_actual[df_actual['name'].str.contains(busqueda, case=False, na=False)].copy()
-                else:
-                    df_viz = df_actual.copy()
+                df_viz = df_actual[df_actual['name'].str.contains(busqueda, case=False, na=False)].copy() if busqueda else df_actual.copy()
 
-                # 2. Lógica de Agrupación
                 if tipo_vista == "Por Cantón (Resumen)":
-                    # Aseguramos que las métricas sean numéricas antes de sumar
                     for m in METRICAS:
                         df_viz[m] = pd.to_numeric(df_viz[m], errors='coerce').fillna(0)
-                    
                     df_final = df_viz.groupby(['provincia', 'canton'])[METRICAS].sum().reset_index()
                     df_final["Estado"] = "📊 Resumen"
                     columnas_finales = ["provincia", "canton", "Estado"] + METRICAS
                 else:
-                    # Vista detalle
                     df_final = df_viz.rename(columns={'estado': 'Estado'})
                     columnas_finales = ["provincia", "canton", "name", "Estado"] + METRICAS
 
-                # Estética
                 df_final['provincia'] = df_final['provincia'].str.title()
                 df_final['canton'] = df_final['canton'].str.title()
                 df_final.insert(0, '#', range(1, len(df_final) + 1))
 
-                # 3. Mostrar Tabla
                 st.dataframe(
                     df_final[["#"] + columnas_finales].style.map(
                         aplicar_color_semaforo, subset=METRICAS
