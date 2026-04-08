@@ -134,52 +134,53 @@ if not df_master.empty:
             idx = idx_list[0]
 
             if code == 200 and res_json:
-                            # Forzamos que actual_data sea un diccionario pase lo que pase
-                            actual_data = {}
-                            
-                            if isinstance(res_json, dict):
-                                actual_data = res_json
-                            elif isinstance(res_json, list) and len(res_json) > 0:
-                                # Si es una lista, intentamos extraer el primer elemento si es dict
-                                if isinstance(res_json[0], dict):
-                                    actual_data = res_json[0]
-            
-                            # --- LA LÍNEA DE SEGURIDAD ---
-                            # Solo ejecutamos .get si confirmamos que es un diccionario
-                            data_cluster = {}
-                            if isinstance(actual_data, dict):
-                                data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
-                            else:
-                                print(f"DEBUG: res_json llegó como {type(res_json)} y no se pudo convertir.")
-                            
-                                              
-                            if data_cluster:
-                                for test_name, targets in data_cluster.items():
-                                    if isinstance(targets, dict):
-                                        for target_key, details in targets.items():
-                                            # El .get() aquí también debe ser robusto
-                                            medux_data = details.get("meduxId", {})
-                                            if isinstance(medux_data, dict):
-                                                count = medux_data.get("count", 0)
-                                            else:
-                                                count = 0
-                                                
-                                            col = None
-                                            if "ping" in test_name:
-                                                col = "Ping Nacional" if IP_NACIONAL in str(target_key) else "Ping Internacional"
-                                            elif "down" in test_name: 
-                                                col = "HTTP Download"
-                                            elif "upload" in test_name: 
-                                                col = "HTTP Upload"
-                                            
-                                            if col:
-                                                # Aseguramos que el valor actual sea numérico antes de sumar
-                                                valor_actual = pd.to_numeric(df_state.at[idx, col], errors='coerce') or 0
-                                                df_state.at[idx, col] = int(valor_actual) + int(count)
                                 
-                                df_state.at[idx, "estado"] = "✅ OK"
-                            else:
-                                df_state.at[idx, "estado"] = "⚠️ No en JSON"
+                # Forzamos que actual_data sea un diccionario pase lo que pase
+                actual_data = {}
+                
+                if isinstance(res_json, dict):
+                    actual_data = res_json
+                elif isinstance(res_json, list) and len(res_json) > 0:
+                    # Si es una lista, intentamos extraer el primer elemento si es dict
+                    if isinstance(res_json[0], dict):
+                        actual_data = res_json[0]
+
+                # --- LA LÍNEA DE SEGURIDAD ---
+                # Solo ejecutamos .get si confirmamos que es un diccionario
+                data_cluster = {}
+                if isinstance(actual_data, dict):
+                    data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
+                else:
+                    print(f"DEBUG: res_json llegó como {type(res_json)} y no se pudo convertir.")
+
+    
+                if data_cluster:
+                    for test_name, targets in data_cluster.items():
+                        if isinstance(targets, dict):
+                            for target_key, details in targets.items():
+                                # El .get() aquí también debe ser robusto
+                                medux_data = details.get("meduxId", {})
+                                if isinstance(medux_data, dict):
+                                    count = medux_data.get("count", 0)
+                                else:
+                                    count = 0
+                                    
+                                col = None
+                                if "ping" in test_name:
+                                    col = "Ping Nacional" if IP_NACIONAL in str(target_key) else "Ping Internacional"
+                                elif "down" in test_name: 
+                                    col = "HTTP Download"
+                                elif "upload" in test_name: 
+                                    col = "HTTP Upload"
+                                
+                                if col:
+                                    # Aseguramos que el valor actual sea numérico antes de sumar
+                                    valor_actual = pd.to_numeric(df_state.at[idx, col], errors='coerce') or 0
+                                    df_state.at[idx, col] = int(valor_actual) + int(count)
+                    
+                    df_state.at[idx, "estado"] = "✅ OK"
+                else:
+                    df_state.at[idx, "estado"] = "⚠️ No en JSON"
 
         st.success("Sincronización finalizada.")
         st.rerun()
