@@ -115,7 +115,7 @@ if not df_master.empty:
                 progress_bar.progress((i + 1) / len(todos_ids))
                 status.text(f"Descargando clusters: {i+1}/{len(todos_ids)}")
 
-        status.text("Procesando datos descargados...")
+    status.text("Procesando datos descargados...")
         for cid, res_json, code in results_list:
             row_master = df_master[df_master['id'] == cid]
             if row_master.empty: continue
@@ -129,14 +129,19 @@ if not df_master.empty:
             if len(idx_list) == 0: continue
             idx = idx_list[0]
 
-            if code == 200 and res_json:
-                actual_data = res_json
-                if isinstance(res_json, list) and len(res_json) > 0:
-                    actual_data = res_json[0]
-
-                data_cluster = {}
-                if isinstance(actual_data, dict):
-                    data_cluster = actual_data.get("results", {}).get(mes_key, {}).get(cid, {})
+            if code == 200 and res_json is not None:
+                # --- SOLUCIÓN AL ERROR: Validación de estructura ---
+                actual_data = {}
+                if isinstance(res_json, list):
+                    # Si es una lista, tomamos el primer elemento si existe
+                    actual_data = res_json[0] if len(res_json) > 0 else {}
+                elif isinstance(res_json, dict):
+                    actual_data = res_json
+                
+                # Extraemos data_cluster usando .get() de forma segura
+                results = actual_data.get("results", {}) if isinstance(actual_data, dict) else {}
+                data_mes = results.get(mes_key, {}) if isinstance(results, dict) else {}
+                data_cluster = data_mes.get(cid, {}) if isinstance(data_mes, dict) else {}
                 
                 if data_cluster and isinstance(data_cluster, dict):
                     for test_name, targets in data_cluster.items():
@@ -155,16 +160,22 @@ if not df_master.empty:
                                         col = "HTTP Upload"
                                     
                                     if col:
-                                        valor_previo = pd.to_numeric(df_state.at[idx, col], errors='coerce') or 0
-                                        df_state.at[idx, col] = int(valor_previo) + int(count)
+                                        # Asegurar que el valor previo sea numérico
+                                        try:
+                                            valor_previo = int(df_state.at[idx, col])
+                                        except:
+                                            valor_previo = 0
+                                        df_state.at[idx, col] = valor_previo + int(count)
                     
                     df_state.at[idx, "estado"] = "✅ OK"
                 else:
                     df_state.at[idx, "estado"] = "⚠️ Sin datos"
             else:
                 df_state.at[idx, "estado"] = f"❌ Error {code}"
-        st.success("Sincronización finalizada.")
+        
+        status.text("Sincronización finalizada.")
         st.rerun()
+
 
     # --- RENDERIZADO DE TABS ---
     tabs = st.tabs([f"OPERADOR: {op}" for op in operadores])
