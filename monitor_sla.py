@@ -14,15 +14,14 @@ st.set_page_config(
 )
 
 # --- CONFIGURACIÓN DE API (Docker/Cloud) ---
-try:
-    API_URL = st.secrets.get("api_url")
-    BEARER_TOKEN = st.secrets.get("bearer_token")
-except Exception:
-    API_URL = os.getenv("api_url")
-    BEARER_TOKEN = os.getenv("bearer_token")
 
+API_URL = os.getenv("api_url")
+BEARER_TOKEN = os.getenv("bearer_token")
+
+# --- VERIFICACIÓN CRÍTICA ---
 if not API_URL or not BEARER_TOKEN:
-    st.error("❌ Error Crítico: No se encontraron las credenciales.")
+    st.error("❌ Error: No se detectan las variables de entorno.")
+    st.write("Variables actuales detectadas:", list(os.environ.keys())) # Esto te ayudará a debuguear
     st.stop()
 
 HEADERS = {
