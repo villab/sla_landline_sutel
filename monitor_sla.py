@@ -115,7 +115,7 @@ if not df_master.empty:
                 progress_bar.progress((i + 1) / len(todos_ids))
                 status.text(f"Descargando clusters: {i+1}/{len(todos_ids)}")
 
-    status.text("Procesando datos descargados...")
+        status.text("Procesando datos descargados...")
         for cid, res_json, code in results_list:
             row_master = df_master[df_master['id'] == cid]
             if row_master.empty: continue
