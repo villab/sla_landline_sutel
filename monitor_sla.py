@@ -50,11 +50,17 @@ def load_data():
         df.columns = [str(c).strip().lower() for c in df.columns]
         if 'id' not in df.columns and 'cluster' in df.columns:
             df = df.rename(columns={'cluster': 'id'})
+
+        # Normalizar texto para que el groupby por cantón no se rompa por espacios/casing
+        for col in ['provincia', 'canton', 'name']:
+            if col in df.columns:
+                df[col] = df[col].astype(str).str.strip()
+
         return df
     except Exception as e:
         st.error(f"Error cargando Excel: {e}")
         return pd.DataFrame()
-
+        
 def fetch_cluster_data(cid, ts_start, ts_end, mes_key):
     payload = {
         "tsStart": ts_start, 
