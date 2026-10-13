@@ -47,6 +47,10 @@ BASE_URL = API_URL.split("/api/")[0] if "/api/" in API_URL else API_URL.rstrip("
 VENTANA_ON_MS = 60 * 60 * 1000  # 1 hora
 CLUSTERS_POR_LOTE = 50
 
+# Masterfile de fijo (mismo archivo que publica el visor "Masterfile Entorno de Medición").
+# Columnas usadas: "Sonda" (serial/MAC) y "Panelista".
+MASTERFILE_PATH = os.getenv("masterfile_path", "MasterfileSutel.xlsx")
+
 
 # --- FUNCIONES DE APOYO ---
 def aplicar_color_semaforo(val):
@@ -97,6 +101,30 @@ def load_data():
     except Exception as e:
         st.error(f"Error cargando Excel: {e}")
         return pd.DataFrame()
+
+
+def normalizar_serial(s):
+    """001E:06:3A:7F:03 / 001e-063a-7f03 / 001e063a7f03 → 001e063a7f03"""
+    return "".join(ch for ch in str(s).lower() if ch.isalnum())
+
+
+@st.cache_data(ttl=3600)
+def load_panelistas(path):
+    """{serial_normalizado: panelista} desde el Masterfile de fijo. Vacío si no se puede leer."""
+    try:
+        df = pd.read_excel(path, engine="openpyxl", dtype=str)
+    except Exception:
+        return {}
+    cols = {str(c).strip().lower(): c for c in df.columns}
+    col_sonda, col_pan = cols.get("sonda"), cols.get("panelista")
+    if col_sonda is None or col_pan is None:
+        return {}
+    df = df[[col_sonda, col_pan]].dropna(subset=[col_sonda])
+    return {
+        normalizar_serial(s): str(p).strip()
+        for s, p in zip(df[col_sonda], df[col_pan])
+        if str(p).strip() and str(p).strip().lower() != "nan"
+    }
 
 
 def fetch_cluster_data(cid, ts_start, ts_end, mes_key):
