@@ -32,10 +32,20 @@ HEADERS = {
 
 # Zona horaria de referencia del proyecto (Costa Rica, UTC-6, sin horario de verano).
 # Se usa explícitamente para que el rango del mes no dependa de la TZ del contenedor (normalmente UTC).
-TZ_CR = ZoneInfo("America/Costa_Rica")
+TZ_NAME = "America/Costa_Rica"
+TZ_CR = ZoneInfo(TZ_NAME)
 
 IP_NACIONAL = "138.59.18.180"
 METRICAS = ["Ping Nacional", "Ping Internacional", "HTTP Download", "HTTP Upload"]
+PROGRAMAS = ["http-upload-burst-test", "http-down-burst-test", "ping-test"]
+
+# Base de la API (p. ej. https://ids.medux.com) derivada de api_url (…/api/results),
+# para consultar nombres de sondas en /api/profile/probes/status.
+BASE_URL = API_URL.split("/api/")[0] if "/api/" in API_URL else API_URL.rstrip("/")
+
+# Una sonda está ON si reportó al menos un test dentro de esta ventana antes de la consulta.
+VENTANA_ON_MS = 60 * 60 * 1000  # 1 hora
+CLUSTERS_POR_LOTE = 50
 
 
 # --- FUNCIONES DE APOYO ---
@@ -94,7 +104,8 @@ def fetch_cluster_data(cid, ts_start, ts_end, mes_key):
         "tsStart": ts_start,
         "tsEnd": ts_end,
         "format": "aggregate",
-        "programs": ["http-upload-burst-test", "http-down-burst-test", "ping-test"],
+        "timezone": TZ_NAME,
+        "programs": PROGRAMAS,
         "clusters": [cid],
         "aggregate": {
             "groupBy": {"field": "dateStart", "operation": "month"},
@@ -130,10 +141,135 @@ def construir_pendientes(operadores, mes_key, meta, metricas_eval, busqueda):
     df["Métricas pendientes"] = (faltan > 0).sum(axis=1)
     df["Muestras faltantes"] = faltan.sum(axis=1)
     df["Avance mín. %"] = (df[metricas_eval].clip(upper=meta) / meta).min(axis=1) * 100
-    df["Pendiente en"] = faltan.apply(
-        lambda r: ", ".join(c for c in metricas_eval if r[c] > 0), axis=1
-    )
     return df
+
+
+# --- SONDAS POR CLUSTER (ON / OFF) ---
+def _sondas_por_cluster(res_json):
+    """Parsea un agregado con breakdownBy [cluster, probeId] → {cluster: {probeId: muestras}}.
+    Suma todas las llaves de periodo que devuelva la API."""
+    out = {}
+    data = res_json[0] if isinstance(res_json, list) and res_json else res_json
+    results = data.get("results", {}) if isinstance(data, dict) else {}
+    if not isinstance(results, dict):
+        return out
+    for _periodo, por_cluster in results.items():
+        if not isinstance(por_cluster, dict):
+            continue
+        for cid, por_sonda in por_cluster.items():
+            if not isinstance(por_sonda, dict):
+                continue
+            for pid, det in por_sonda.items():
+                cnt = 1
+                if isinstance(det, dict):
+                    medux = det.get("meduxId", {})
+                    cnt = medux.get("count", det.get("samples", 1)) if isinstance(medux, dict) else det.get("samples", 1)
+                d = out.setdefault(str(cid), {})
+                d[str(pid)] = d.get(str(pid), 0) + int(cnt or 0)
+    return out
+
+
+def fetch_sondas_lote(cids, ts_start, ts_end):
+    """Una sola petición para un lote de clusters: qué sondas reportaron tests en el rango."""
+    payload = {
+        "tsStart": int(ts_start),
+        "tsEnd": int(ts_end),
+        "format": "aggregate",
+        "timezone": TZ_NAME,
+        "programs": PROGRAMAS,
+        "clusters": list(cids),
+        "aggregate": {
+            "groupBy": {"field": "dateStart", "operation": "month"},
+            "values": [{"field": "meduxId", "operation": "count"}],
+            "breakdownBy": ["cluster", "probeId"]
+        }
+    }
+    try:
+        r = requests.post(API_URL, json=payload, headers=HEADERS, timeout=30)
+        if r.status_code != 200:
+            return {}, f"HTTP {r.status_code}"
+        return _sondas_por_cluster(r.json()), None
+    except Exception as e:
+        return {}, type(e).__name__
+
+
+def fetch_nombres_sondas(probe_ids):
+    """Nombres descriptivos desde Probe Status. Si falla, se muestran solo los IDs."""
+    nombres = {}
+    ids = sorted(probe_ids)
+    for i in range(0, len(ids), 100):
+        try:
+            r = requests.post(
+                f"{BASE_URL}/api/profile/probes/status",
+                json={"probeIds": ids[i:i + 100]}, headers=HEADERS, timeout=30
+            )
+            if r.status_code != 200:
+                continue
+            data = r.json()
+            filas = data if isinstance(data, list) else data.get("results", data.get("probes", [])) if isinstance(data, dict) else []
+            for p in filas:
+                if isinstance(p, dict) and p.get("_id"):
+                    nombres[str(p["_id"])] = p.get("name") or ""
+        except Exception:
+            continue
+    return nombres
+
+
+def consultar_sondas(cids, ts_start_mes, ts_end_mes):
+    """Sondas que reportan a cada cluster en el mes + estado ON/OFF según tests en la última hora.
+    Guarda el resultado en session_state con la hora de la consulta."""
+    ahora = datetime.now(TZ_CR)
+    ts_ahora = int(ahora.timestamp() * 1000)
+    ts_hace_1h = ts_ahora - VENTANA_ON_MS
+
+    lotes = [cids[i:i + CLUSTERS_POR_LOTE] for i in range(0, len(cids), CLUSTERS_POR_LOTE)]
+    mes_fin = min(ts_end_mes, ts_ahora)
+    tareas = []
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        for lote in lotes:
+            if ts_start_mes < mes_fin:
+                tareas.append(("mes", ex.submit(fetch_sondas_lote, lote, ts_start_mes, mes_fin)))
+            tareas.append(("hora", ex.submit(fetch_sondas_lote, lote, ts_hace_1h, ts_ahora)))
+        en_mes, en_hora, errores = {}, {}, []
+        for tipo, fut in tareas:
+            data, err = fut.result()
+            if err:
+                errores.append(err)
+            destino = en_mes if tipo == "mes" else en_hora
+            for cid, sondas in data.items():
+                destino.setdefault(cid, {}).update(sondas)
+
+    por_cluster = {}
+    for cid in set(en_mes) | set(en_hora):
+        todas = set(en_mes.get(cid, {})) | set(en_hora.get(cid, {}))
+        por_cluster[cid] = {pid: pid in en_hora.get(cid, {}) for pid in todas}
+
+    todas_sondas = {pid for s in por_cluster.values() for pid in s}
+    nombres = fetch_nombres_sondas(todas_sondas) if todas_sondas else {}
+
+    return {
+        "consulta": ahora,
+        "por_cluster": por_cluster,
+        "nombres": nombres,
+        "errores": errores,
+    }
+
+
+def formatear_sondas(cid, info):
+    """Texto de la columna 'Sondas' y conteo ON/total para un cluster."""
+    if info is None:
+        return "Sin consultar", ""
+    sondas = info["por_cluster"].get(str(cid), {})
+    if not sondas:
+        return "Sin sondas reportando", "0/0"
+    nombres = info["nombres"]
+    orden = sorted(sondas.items(), key=lambda kv: (not kv[1], kv[0]))  # ON primero
+    partes = []
+    for pid, on in orden:
+        etiqueta = f"{nombres[pid]} ({pid})" if nombres.get(pid) else pid
+        partes.append(f"{'🟢 ON' if on else '🔴 OFF'} {etiqueta}")
+    n_on = sum(sondas.values())
+    return " | ".join(partes), f"{n_on}/{len(sondas)}"
 
 
 # --- PROCESAMIENTO ---
@@ -262,15 +398,21 @@ if not df_master.empty:
             else:
                 df_state.at[idx, "estado"] = f"❌ Error {code}"
 
+        status.text("Consultando sondas por cluster (ON/OFF)...")
+        st.session_state[f"sondas_{mes_key}"] = consultar_sondas(
+            [str(c) for c in todos_ids], ts_start, ts_end
+        )
+
         status.text("Sincronización finalizada.")
         st.rerun()
 
-    # --- RENDERIZADO DE TABS ---
-    nombres_tabs = [f"OPERADOR: {op}" for op in operadores] + ["📋 PENDIENTES DE MUESTRAS"]
+    # --- RENDERIZADO DE TABS (Resumen primero → es la que abre por defecto) ---
+    nombres_tabs = ["📋 RESUMEN DE PENDIENTES"] + [f"OPERADOR: {op}" for op in operadores]
     tabs = st.tabs(nombres_tabs)
+    tab_resumen, tabs_ops = tabs[0], tabs[1:]
 
     for i, op in enumerate(operadores):
-        with tabs[i]:
+        with tabs_ops[i]:
             state_key = f"df_{op}_{mes_key}"
             if state_key in st.session_state:
                 df_actual = st.session_state[state_key]
@@ -300,8 +442,8 @@ if not df_master.empty:
                     hide_index=True
                 )
 
-    # --- TAB: PENDIENTES DE MUESTRAS ---
-    with tabs[-1]:
+    # --- TAB: RESUMEN DE PENDIENTES ---
+    with tab_resumen:
         df_eval = construir_pendientes(operadores, mes_key, meta, metricas_eval, busqueda)
 
         if df_eval is None:
@@ -348,6 +490,26 @@ if not df_master.empty:
 
             # Detalle de clusters pendientes
             st.subheader("Detalle de sitios pendientes")
+
+            sondas_key = f"sondas_{mes_key}"
+            s1, s2 = st.columns([3, 1])
+            if s2.button("🛰️ Actualizar estado de sondas", use_container_width=True):
+                with st.spinner("Consultando sondas..."):
+                    st.session_state[sondas_key] = consultar_sondas(
+                        [str(c) for c in df_master['id'].unique()], ts_start, ts_end
+                    )
+            info_sondas = st.session_state.get(sondas_key)
+            if info_sondas:
+                s1.caption(
+                    f"Estado de sondas consultado: {info_sondas['consulta']:%Y-%m-%d %H:%M} (hora CR). "
+                    f"🟢 ON = reportó al menos un test en la hora previa a la consulta; 🔴 OFF = sin tests en esa hora."
+                )
+                if info_sondas["errores"]:
+                    s1.warning(f"{len(info_sondas['errores'])} lote(s) de la consulta de sondas fallaron "
+                               f"({', '.join(sorted(set(info_sondas['errores'])))}). Puede faltar información.")
+            else:
+                s1.caption("Estado de sondas sin consultar. Usa el botón para obtenerlo.")
+
             if df_pend.empty:
                 st.success("🎉 Todos los clusters cumplen la meta para este mes.")
             else:
@@ -366,15 +528,31 @@ if not df_master.empty:
                 df_det = df_det.rename(columns={"estado": "Estado", "operador": "Operador"})
                 df_det.insert(0, "#", range(1, len(df_det) + 1))
 
+                sondas_fmt = df_det["id"].apply(lambda c: formatear_sondas(c, info_sondas))
+                df_det["Sondas"] = sondas_fmt.str[0]
+                df_det["ON / Total"] = sondas_fmt.str[1]
+
+                def color_on_total(x):
+                    try:
+                        on, tot = (int(v) for v in str(x).split("/"))
+                    except Exception:
+                        return ""
+                    if tot == 0 or on == 0:
+                        return "color: #d63031; font-weight: bold"
+                    if on < tot:
+                        return "color: #e67e22; font-weight: bold"
+                    return "color: #27ae60; font-weight: bold"
+
                 cols_det = (
                     ["#", "Operador", "provincia", "canton", "name", "Estado"]
                     + METRICAS
-                    + ["Pendiente en", "Muestras faltantes", "Avance mín. %"]
+                    + ["ON / Total", "Sondas", "Muestras faltantes", "Avance mín. %"]
                 )
                 st.dataframe(
                     df_det[cols_det].style
                         .map(aplicar_color_semaforo, subset=METRICAS)
                         .map(color_estado, subset=["Estado"])
+                        .map(color_on_total, subset=["ON / Total"])
                         .format("{:,.0f}", subset=METRICAS + ["Muestras faltantes"])
                         .format("{:.1f}%", subset=["Avance mín. %"]),
                     use_container_width=True,
