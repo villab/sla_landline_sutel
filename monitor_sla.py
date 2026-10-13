@@ -47,9 +47,20 @@ BASE_URL = API_URL.split("/api/")[0] if "/api/" in API_URL else API_URL.rstrip("
 VENTANA_ON_MS = 60 * 60 * 1000  # 1 hora
 CLUSTERS_POR_LOTE = 50
 
-# Masterfile de fijo (mismo archivo que publica el visor "Masterfile Entorno de Medición").
-# Columnas usadas: "Sonda" (serial/MAC) y "Panelista".
+# Masterfile de fijo: se lee directo de SharePoint (la versión vigente que guarda la app
+# "Masterfile Entorno de Medición"). Columnas usadas: "Sonda" (serial/MAC) y "Panelista".
+# Usa las mismas credenciales de Azure AD (app registration) que la app del masterfile.
+SP_TENANT_ID = os.getenv("tenant_id")
+SP_CLIENT_ID = os.getenv("client_id")
+SP_CLIENT_SECRET = os.getenv("client_secret")
+SP_SITE_NAME = os.getenv("sp_site_name", "Sutel")
+SP_MASTERFILE = os.getenv(
+    "sp_masterfile_path",
+    "01. Documentos MedUX/Automatizacion/Masterfile/MasterfileSutel.xlsx"
+)
+# Respaldo opcional: archivo local (solo se usa si no hay credenciales de SharePoint o falla la descarga).
 MASTERFILE_PATH = os.getenv("masterfile_path", "MasterfileSutel.xlsx")
+MASTERFILE_TTL = 15 * 60  # segundos que se reutiliza la copia descargada
 
 
 # --- FUNCIONES DE APOYO ---
@@ -283,21 +294,22 @@ def consultar_sondas(cids, ts_start_mes, ts_end_mes):
     }
 
 
-def formatear_sondas(cid, info):
-    """Texto de la columna 'Sondas' y conteo ON/total para un cluster."""
+def formatear_sondas(cid, info, panelistas):
+    """Textos de las columnas 'Sondas' y 'Panelista' (mismo orden) y conteo ON/total."""
     if info is None:
-        return "Sin consultar", ""
+        return "Sin consultar", "", ""
     sondas = info["por_cluster"].get(str(cid), {})
     if not sondas:
-        return "Sin sondas reportando", "0/0"
+        return "Sin sondas reportando", "", "0/0"
     nombres = info["nombres"]
     orden = sorted(sondas.items(), key=lambda kv: (not kv[1], kv[0]))  # ON primero
-    partes = []
+    partes, pans = [], []
     for pid, on in orden:
         etiqueta = f"{nombres[pid]} ({pid})" if nombres.get(pid) else pid
         partes.append(f"{'🟢 ON' if on else '🔴 OFF'} {etiqueta}")
+        pans.append(panelistas.get(normalizar_serial(pid), "Sin registro en masterfile"))
     n_on = sum(sondas.values())
-    return " | ".join(partes), f"{n_on}/{len(sondas)}"
+    return " | ".join(partes), " | ".join(pans), f"{n_on}/{len(sondas)}"
 
 
 # --- PROCESAMIENTO ---
@@ -556,9 +568,14 @@ if not df_master.empty:
                 df_det = df_det.rename(columns={"estado": "Estado", "operador": "Operador"})
                 df_det.insert(0, "#", range(1, len(df_det) + 1))
 
-                sondas_fmt = df_det["id"].apply(lambda c: formatear_sondas(c, info_sondas))
+                panelistas = load_panelistas(MASTERFILE_PATH)
+                if not panelistas:
+                    st.warning(f"No se pudo leer el masterfile de panelistas ({MASTERFILE_PATH}). "
+                               "Revisa la ruta (variable de entorno masterfile_path) y que tenga las columnas 'Sonda' y 'Panelista'.")
+                sondas_fmt = df_det["id"].apply(lambda c: formatear_sondas(c, info_sondas, panelistas))
                 df_det["Sondas"] = sondas_fmt.str[0]
-                df_det["ON / Total"] = sondas_fmt.str[1]
+                df_det["Panelista"] = sondas_fmt.str[1]
+                df_det["ON / Total"] = sondas_fmt.str[2]
 
                 def color_on_total(x):
                     try:
@@ -572,7 +589,7 @@ if not df_master.empty:
                     return "color: #27ae60; font-weight: bold"
 
                 cols_det = (
-                    ["#", "Operador", "provincia", "canton", "name", "Estado"]
+                    ["#", "Operador", "provincia", "canton", "name", "Panelista", "Estado"]
                     + METRICAS
                     + ["ON / Total", "Sondas", "Muestras faltantes", "Avance mín. %"]
                 )
