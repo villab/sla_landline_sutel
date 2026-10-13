@@ -119,23 +119,82 @@ def normalizar_serial(s):
     return "".join(ch for ch in str(s).lower() if ch.isalnum())
 
 
-@st.cache_data(ttl=3600)
-def load_panelistas(path):
-    """{serial_normalizado: panelista} desde el Masterfile de fijo. Vacío si no se puede leer."""
-    try:
-        df = pd.read_excel(path, engine="openpyxl", dtype=str)
-    except Exception:
-        return {}
+def _graph_token():
+    """Token de aplicación (client credentials) para Microsoft Graph, sin depender de msal."""
+    r = requests.post(
+        f"https://login.microsoftonline.com/{SP_TENANT_ID}/oauth2/v2.0/token",
+        data={
+            "grant_type": "client_credentials",
+            "client_id": SP_CLIENT_ID,
+            "client_secret": SP_CLIENT_SECRET,
+            "scope": "https://graph.microsoft.com/.default",
+        },
+        timeout=20,
+    )
+    data = r.json()
+    if "access_token" not in data:
+        raise Exception(f"Token Graph: {data.get('error')} {data.get('error_description', '')[:200]}")
+    return data["access_token"]
+
+
+def descargar_masterfile_sharepoint():
+    """Descarga los bytes del masterfile vigente desde SharePoint (misma lógica de sitio que la app del masterfile)."""
+    token = _graph_token()
+    h = {"Authorization": f"Bearer {token}"}
+    sites = requests.get(f"https://graph.microsoft.com/v1.0/sites?search={SP_SITE_NAME}",
+                         headers=h, timeout=20).json().get("value", [])
+    # Coincidencia EXACTA: "Sutel" es substring de otros sitios (ProyectoSUTEL…)
+    site = next((s for s in sites if s.get("name", "").strip().lower() == SP_SITE_NAME.lower()), None)
+    if site is None:
+        raise Exception(f"Sitio '{SP_SITE_NAME}' no encontrado. Candidatos: {[s.get('name') for s in sites]}")
+    drives = requests.get(f"https://graph.microsoft.com/v1.0/sites/{site['id']}/drives",
+                          headers=h, timeout=20).json().get("value", [])
+    if not drives:
+        raise Exception("El sitio no tiene bibliotecas de documentos.")
+    drive = next((d for d in drives if d.get("name", "").lower() in ("documents", "documentos")), drives[0])
+    r = requests.get(
+        f"https://graph.microsoft.com/v1.0/sites/{site['id']}/drives/{drive['id']}/root:/{SP_MASTERFILE}:/content",
+        headers=h, timeout=60,
+    )
+    if r.status_code != 200:
+        raise Exception(f"Descarga masterfile HTTP {r.status_code}")
+    return r.content
+
+
+def _panelistas_desde_excel(fuente):
+    df = pd.read_excel(fuente, engine="openpyxl", dtype=str)
     cols = {str(c).strip().lower(): c for c in df.columns}
-    col_sonda, col_pan = cols.get("sonda"), cols.get("panelista")
+    col_sonda = cols.get("sonda") or cols.get("id sonda")
+    col_pan = cols.get("panelista")
     if col_sonda is None or col_pan is None:
-        return {}
+        raise Exception(f"El masterfile no tiene columnas 'Sonda' y 'Panelista' (tiene: {list(df.columns)[:15]})")
     df = df[[col_sonda, col_pan]].dropna(subset=[col_sonda])
     return {
         normalizar_serial(s): str(p).strip()
         for s, p in zip(df[col_sonda], df[col_pan])
         if str(p).strip() and str(p).strip().lower() != "nan"
     }
+
+
+@st.cache_data(ttl=MASTERFILE_TTL, show_spinner="Leyendo masterfile de panelistas...")
+def load_panelistas():
+    """Devuelve (panelistas, origen, hora_carga, error).
+    1º SharePoint (versión vigente); si no hay credenciales o falla, archivo local."""
+    from io import BytesIO
+    hora = datetime.now(TZ_CR)
+    error_sp = None
+    if SP_TENANT_ID and SP_CLIENT_ID and SP_CLIENT_SECRET:
+        try:
+            datos = descargar_masterfile_sharepoint()
+            return _panelistas_desde_excel(BytesIO(datos)), "SharePoint", hora, None
+        except Exception as e:
+            error_sp = str(e)
+    else:
+        error_sp = "Sin credenciales de SharePoint (tenant_id / client_id / client_secret)"
+    try:
+        return _panelistas_desde_excel(MASTERFILE_PATH), f"archivo local {MASTERFILE_PATH}", hora, error_sp
+    except Exception as e:
+        return {}, None, hora, f"{error_sp} | Local: {e}"
 
 
 def fetch_cluster_data(cid, ts_start, ts_end, mes_key):
@@ -568,10 +627,16 @@ if not df_master.empty:
                 df_det = df_det.rename(columns={"estado": "Estado", "operador": "Operador"})
                 df_det.insert(0, "#", range(1, len(df_det) + 1))
 
-                panelistas = load_panelistas(MASTERFILE_PATH)
-                if not panelistas:
-                    st.warning(f"No se pudo leer el masterfile de panelistas ({MASTERFILE_PATH}). "
-                               "Revisa la ruta (variable de entorno masterfile_path) y que tenga las columnas 'Sonda' y 'Panelista'.")
+                m1, m2 = st.columns([3, 1])
+                if m2.button("📋 Recargar masterfile", use_container_width=True):
+                    load_panelistas.clear()
+                panelistas, origen_mf, hora_mf, error_mf = load_panelistas()
+                if panelistas:
+                    m1.caption(f"Panelistas: {origen_mf} · {len(panelistas)} sondas · leído {hora_mf:%H:%M} (hora CR)")
+                    if error_mf:
+                        m1.warning(f"No se pudo leer de SharePoint, se usó el respaldo local: {error_mf}")
+                else:
+                    m1.warning(f"No se pudo leer el masterfile de panelistas: {error_mf}")
                 sondas_fmt = df_det["id"].apply(lambda c: formatear_sondas(c, info_sondas, panelistas))
                 df_det["Sondas"] = sondas_fmt.str[0]
                 df_det["Panelista"] = sondas_fmt.str[1]
